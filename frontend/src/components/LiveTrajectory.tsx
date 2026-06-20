@@ -46,8 +46,14 @@ export default function LiveTrajectory({
   const terminal = ["completed", "failed", "error"].includes(status);
 
   return (
-    <div>
-      <h2>Live Trajectory</h2>
+    <div className="page">
+      <header className="page-head">
+        <h2>Live trajectory</h2>
+        <p className="subtitle">
+          Watch the agent reason in real time — each cell of code it writes and the output it
+          gets back.
+        </p>
+      </header>
       <div className="card">
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           <StatusBadge status={status} />

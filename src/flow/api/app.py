@@ -37,10 +37,20 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+import yaml
+
 from flow import db
-from flow.config import ConfigError, default_config_yaml, load_config
+from flow.config import (
+    ConfigError,
+    DatasetConfig,
+    FlowConfig,
+    RuntimeConfig,
+    SafetyConfig,
+    default_config_yaml,
+    load_config,
+)
 from flow.env.docker_runtime import DEFAULT_IMAGE, doctor
-from flow.providers.registry import SUPPORTED_PROVIDERS
+from flow.providers.registry import MODEL_CATALOG, SUPPORTED_PROVIDERS, UI_PROVIDERS, default_model
 from flow.runner import run_analysis
 from flow.trajectory import Trajectory
 from flow.validation import MAX_UPLOAD_BYTES, UnsafePathError, profile_project, safe_filename
@@ -69,6 +79,23 @@ class SaveConfigBody(BaseModel):
     content: str
 
 
+class ConfigFormBody(BaseModel):
+    """Structured config fields from the friendly form (no raw YAML on the client)."""
+
+    question: str
+    description: str = ""
+    provider: str = "mock"
+    model: str = "mock"
+    max_steps: int = 30
+    per_cell_timeout: float = 120.0
+    per_trajectory_timeout: float = 1800.0
+    memory: str = "4g"
+    cpus: str = "2"
+    pids_limit: int = 256
+    allow_network: bool = False
+    allow_raw_data_to_model: bool = False
+
+
 class StartRunBody(BaseModel):
     project_id: str
     question: Optional[str] = None
@@ -78,6 +105,11 @@ class StartRunBody(BaseModel):
 
 
 def create_app() -> FastAPI:
+    # Load a host-side .env (if present) so provider API keys are available to the backend
+    # without exporting them. Existing environment variables are never overridden.
+    from flow.envfile import load_dotenv
+
+    load_dotenv()
     app = FastAPI(title="FLOW API", version="1.0.0")
     db.init_db()
 
@@ -99,7 +131,12 @@ def create_app() -> FastAPI:
 
     @app.get("/api/providers")
     def providers() -> dict[str, Any]:
-        return {"providers": SUPPORTED_PROVIDERS}
+        return {
+            "providers": SUPPORTED_PROVIDERS,
+            "ui_providers": UI_PROVIDERS,
+            "catalog": MODEL_CATALOG,
+            "default_models": {p: default_model(p) for p in UI_PROVIDERS},
+        }
 
     # ------------------------------------------------------------- projects
     @app.post("/api/projects")
@@ -154,16 +191,32 @@ def create_app() -> FastAPI:
         proj = _project_or_404(pid)
         return profile_project(proj["path"]).to_dict()
 
+    def _config_dict(cfg_path: Path) -> dict[str, Any]:
+        """Return a structured config dict for the form (parsed file, or defaults)."""
+        if cfg_path.exists():
+            try:
+                return load_config(cfg_path).model_dump()
+            except ConfigError:
+                pass  # malformed/legacy file -> fall back to defaults below
+        return {
+            "question": "",
+            "dataset": DatasetConfig().model_dump(),
+            "runtime": RuntimeConfig().model_dump(),
+            "safety": SafetyConfig().model_dump(),
+        }
+
     @app.get("/api/projects/{pid}/config")
     def get_config(pid: str) -> dict[str, Any]:
         proj = _project_or_404(pid)
         cfg_path = Path(proj["path"]) / "config.yaml"
-        if cfg_path.exists():
-            return {"content": cfg_path.read_text(), "exists": True}
-        return {"content": default_config_yaml(), "exists": False}
+        exists = cfg_path.exists()
+        content = cfg_path.read_text() if exists else default_config_yaml()
+        # `config` powers the friendly form; `content` is the raw YAML (read-only preview).
+        return {"content": content, "exists": exists, "config": _config_dict(cfg_path)}
 
     @app.post("/api/projects/{pid}/config")
     def save_config(pid: str, body: SaveConfigBody) -> dict[str, Any]:
+        """Raw-YAML save (kept for power users / API compatibility)."""
         proj = _project_or_404(pid)
         cfg_path = Path(proj["path"]) / "config.yaml"
         cfg_path.write_text(body.content)
@@ -173,6 +226,36 @@ def create_app() -> FastAPI:
         except ConfigError as e:
             return {"ok": False, "error": str(e)}
         return {"ok": True}
+
+    @app.post("/api/projects/{pid}/config/form")
+    def save_config_form(pid: str, body: ConfigFormBody) -> dict[str, Any]:
+        """Structured save from the friendly form: builds analysis-free YAML server-side."""
+        proj = _project_or_404(pid)
+        try:
+            cfg = FlowConfig(
+                question=body.question,
+                dataset=DatasetConfig(root=".", description=body.description),
+                runtime=RuntimeConfig(
+                    provider=body.provider,
+                    model=body.model,
+                    max_steps=body.max_steps,
+                    per_cell_timeout=body.per_cell_timeout,
+                    per_trajectory_timeout=body.per_trajectory_timeout,
+                ),
+                safety=SafetyConfig(
+                    memory=body.memory,
+                    cpus=body.cpus,
+                    pids_limit=body.pids_limit,
+                    allow_network=body.allow_network,
+                    allow_raw_data_to_model=body.allow_raw_data_to_model,
+                ),
+            )
+        except Exception as e:  # e.g. empty question
+            return {"ok": False, "error": str(e)}
+        yaml_text = yaml.safe_dump(cfg.model_dump(), sort_keys=False)
+        cfg_path = Path(proj["path"]) / "config.yaml"
+        cfg_path.write_text(yaml_text)
+        return {"ok": True, "content": yaml_text}
 
     # ------------------------------------------------------------- runs
     @app.post("/api/runs")

@@ -36,7 +36,42 @@ def test_health(client):
 def test_providers(client):
     c, _ = client
     r = c.get("/api/providers")
-    assert "mock" in r.json()["providers"]
+    body = r.json()
+    assert "mock" in body["providers"]
+    # New: model catalog + defaults power the UI dropdowns.
+    assert "gemini" in body["catalog"]
+    assert body["default_models"]["groq"] == "llama-3.3-70b-versatile"
+    assert "google" not in body["ui_providers"]  # alias hidden from UI
+
+
+def test_config_form_save_and_reload(client):
+    c, _ = client
+    pid = c.post("/api/projects", json={"name": "x"}).json()["id"]
+    r = c.post(
+        f"/api/projects/{pid}/config/form",
+        json={
+            "question": "How does DET-E change over time?",
+            "provider": "groq",
+            "model": "llama-3.3-70b-versatile",
+            "max_steps": 18,
+            "allow_network": True,
+        },
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # GET returns a structured config the form can repopulate from.
+    got = c.get(f"/api/projects/{pid}/config").json()
+    assert got["exists"] is True
+    assert got["config"]["question"] == "How does DET-E change over time?"
+    assert got["config"]["runtime"]["provider"] == "groq"
+    assert got["config"]["runtime"]["max_steps"] == 18
+    assert got["config"]["safety"]["allow_network"] is True
+
+
+def test_config_form_requires_question(client):
+    c, _ = client
+    pid = c.post("/api/projects", json={"name": "x"}).json()["id"]
+    r = c.post(f"/api/projects/{pid}/config/form", json={"question": "   "})
+    assert r.json()["ok"] is False
 
 
 def test_project_lifecycle_and_upload(client):

@@ -60,6 +60,42 @@ export interface Artifact {
   kind: string;
 }
 
+export interface ProvidersInfo {
+  providers: string[];
+  ui_providers: string[];
+  catalog: Record<string, string[]>;
+  default_models: Record<string, string>;
+}
+
+export interface RuntimeCfg {
+  provider: string;
+  model: string;
+  max_steps: number;
+  per_cell_timeout: number;
+  per_trajectory_timeout: number;
+}
+
+export interface SafetyCfg {
+  memory: string;
+  cpus: string;
+  pids_limit: number;
+  allow_network: boolean;
+  allow_raw_data_to_model: boolean;
+}
+
+export interface ParsedConfig {
+  question: string;
+  dataset: { root: string; description: string };
+  runtime: RuntimeCfg;
+  safety: SafetyCfg;
+}
+
+export interface ConfigResponse {
+  content: string;
+  exists: boolean;
+  config: ParsedConfig;
+}
+
 export interface DockerHealth {
   installed: boolean;
   running: boolean;

@@ -18,10 +18,20 @@ export default function RunHistory({
   }, [projectId]);
 
   return (
-    <div>
-      <h2>Run History</h2>
+    <div className="page">
+      <header className="page-head">
+        <h2>Run history</h2>
+        <p className="subtitle">
+          Every run for this project is saved here and survives a refresh. Open one to revisit
+          its conclusion, notebook, and artifacts.
+        </p>
+      </header>
       <div className="card">
-        {runs.length === 0 && <p className="muted">No runs yet for this project.</p>}
+        {runs.length === 0 && (
+          <div className="empty">
+            No runs yet. Launch one from “Launch run” and it will appear here.
+          </div>
+        )}
         {runs.length > 0 && (
           <table>
             <thead>

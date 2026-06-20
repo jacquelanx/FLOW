@@ -138,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Load a host-side .env (if present) so provider API keys are available without
+    # exporting them every session. Existing environment variables are never overridden.
+    from flow.envfile import load_dotenv
+
+    load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

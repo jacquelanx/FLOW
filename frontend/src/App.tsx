@@ -20,15 +20,30 @@ type Page =
   | "artifacts"
   | "history";
 
-const PAGES: { id: Page; label: string; needsProject?: boolean; needsRun?: boolean }[] = [
-  { id: "project", label: "1 · Project & Upload" },
-  { id: "config", label: "2 · Config", needsProject: true },
-  { id: "run", label: "3 · Launch Run", needsProject: true },
-  { id: "trajectory", label: "4 · Live Trajectory", needsRun: true },
-  { id: "notebook", label: "Notebook", needsRun: true },
-  { id: "results", label: "Results", needsRun: true },
-  { id: "artifacts", label: "Artifacts", needsRun: true },
-  { id: "history", label: "Run History", needsProject: true },
+type NavItem = { id: Page; label: string; needsProject?: boolean; needsRun?: boolean };
+// Grouped nav: the linear workflow is numbered; the run-output views and history sit under
+// their own section labels, so the absence of numbers there reads as intentional.
+const NAV_GROUPS: { section?: string; items: NavItem[] }[] = [
+  {
+    items: [
+      { id: "project", label: "1 · Project & Upload" },
+      { id: "config", label: "2 · Configure", needsProject: true },
+      { id: "run", label: "3 · Launch Run", needsProject: true },
+    ],
+  },
+  {
+    section: "Review run",
+    items: [
+      { id: "trajectory", label: "Live Trajectory", needsRun: true },
+      { id: "notebook", label: "Notebook", needsRun: true },
+      { id: "results", label: "Results", needsRun: true },
+      { id: "artifacts", label: "Artifacts", needsRun: true },
+    ],
+  },
+  {
+    section: "History",
+    items: [{ id: "history", label: "Run History", needsProject: true }],
+  },
 ];
 
 export default function App() {
@@ -89,20 +104,25 @@ export default function App() {
       <nav className="sidebar">
         <h1>FLOW</h1>
         <div className="tag">Finch-faithful analysis agent</div>
-        {PAGES.map((p) => {
-          const disabled =
-            (p.needsProject && !projectId) || (p.needsRun && !viewRunId);
-          return (
-            <button
-              key={p.id}
-              className={`navbtn ${page === p.id ? "active" : ""}`}
-              disabled={disabled}
-              onClick={() => go(p.id)}
-            >
-              {p.label}
-            </button>
-          );
-        })}
+        {NAV_GROUPS.map((group, gi) => (
+          <div key={gi}>
+            {group.section && <div className="navsection">{group.section}</div>}
+            {group.items.map((p) => {
+              const disabled =
+                (p.needsProject && !projectId) || (p.needsRun && !viewRunId);
+              return (
+                <button
+                  key={p.id}
+                  className={`navbtn ${page === p.id ? "active" : ""}`}
+                  disabled={disabled}
+                  onClick={() => go(p.id)}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+        ))}
         <div style={{ marginTop: "auto", fontSize: "0.78rem" }}>
           <DockerBadge health={health} />
         </div>

@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import type { ProvidersInfo } from "../types";
+import ModelPicker from "./ModelPicker";
 
-// Page 2: edit config.yaml. The research question is the prominent field. We make it
-// explicit that this is NOT where gates/populations/thresholds are specified.
+// Page 2: a friendly, form-based config editor — no raw YAML. Lab members set the research
+// question and a few run settings with labeled controls; FLOW builds the analysis-free
+// config.yaml on the server. A collapsible read-only YAML preview is available for the
+// curious, but no one needs to touch it.
 export default function ConfigEditor({
   projectId,
   onNext,
@@ -10,84 +14,238 @@ export default function ConfigEditor({
   projectId: string;
   onNext: () => void;
 }) {
-  const [content, setContent] = useState("");
-  const [exists, setExists] = useState(false);
-  const [status, setStatus] = useState<{ ok: boolean; error?: string } | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [info, setInfo] = useState<ProvidersInfo | null>(null);
+
+  // Form fields.
+  const [question, setQuestion] = useState("");
+  const [description, setDescription] = useState("");
+  const [provider, setProvider] = useState("mock");
+  const [model, setModel] = useState("mock");
+  const [maxSteps, setMaxSteps] = useState(30);
+  const [allowNetwork, setAllowNetwork] = useState(false);
+  const [allowRaw, setAllowRaw] = useState(false);
+  const [perCell, setPerCell] = useState(120);
+  const [perTraj, setPerTraj] = useState(1800);
+  const [memory, setMemory] = useState("4g");
+  const [cpus, setCpus] = useState("2");
+
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showYaml, setShowYaml] = useState(false);
+  const [yamlPreview, setYamlPreview] = useState("");
+  const [status, setStatus] = useState<{ ok: boolean; error?: string } | null>(null);
 
   useEffect(() => {
-    api.getConfig(projectId).then((c) => {
-      setContent(c.content);
-      setExists(c.exists);
+    Promise.all([api.providersInfo(), api.getConfig(projectId)]).then(([pi, cfg]) => {
+      setInfo(pi);
+      const c = cfg.config;
+      setQuestion(c.question || "");
+      setDescription(c.dataset?.description || "");
+      setProvider(c.runtime?.provider || "mock");
+      setModel(c.runtime?.model || pi.default_models[c.runtime?.provider] || "mock");
+      setMaxSteps(c.runtime?.max_steps ?? 30);
+      setPerCell(c.runtime?.per_cell_timeout ?? 120);
+      setPerTraj(c.runtime?.per_trajectory_timeout ?? 1800);
+      setAllowNetwork(Boolean(c.safety?.allow_network));
+      setAllowRaw(Boolean(c.safety?.allow_raw_data_to_model));
+      setMemory(c.safety?.memory || "4g");
+      setCpus(c.safety?.cpus || "2");
+      setYamlPreview(cfg.content);
       setLoaded(true);
     });
   }, [projectId]);
 
-  async function save() {
-    const r = await api.saveConfig(projectId, content);
+  const models = info?.catalog[provider] ?? [model];
+
+  function changeProvider(p: string) {
+    setProvider(p);
+    setModel(info?.default_models[p] ?? "");
+  }
+
+  async function save(thenNext = false) {
+    const r = await api.saveConfigForm(projectId, {
+      question,
+      description,
+      provider,
+      model,
+      max_steps: maxSteps,
+      per_cell_timeout: perCell,
+      per_trajectory_timeout: perTraj,
+      memory,
+      cpus,
+      allow_network: allowNetwork,
+      allow_raw_data_to_model: allowRaw,
+    });
     setStatus(r);
-    if (r.ok) setExists(true);
+    if (r.ok && r.content) setYamlPreview(r.content);
+    if (r.ok && thenNext) onNext();
   }
 
-  // Pull the question line out for a prominent dedicated editor.
-  const questionMatch = content.match(/^question:\s*"?(.*?)"?\s*$/m);
-  const question = questionMatch ? questionMatch[1] : "";
-
-  function setQuestion(q: string) {
-    const safe = q.replace(/"/g, "'");
-    if (questionMatch) {
-      setContent(content.replace(/^question:.*$/m, `question: "${safe}"`));
-    } else {
-      setContent(`question: "${safe}"\n` + content);
-    }
-  }
-
-  if (!loaded) return <p>Loading config…</p>;
+  if (!loaded) return <p className="muted">Loading…</p>;
 
   return (
-    <div>
-      <h2>Config</h2>
-      <div className="banner ok">
-        This config is <strong>analysis-free</strong> by design. It says <em>where</em> the
-        data is, <em>what</em> to ask, and <em>how</em> to run — never <em>how to analyze</em>.
-        Gates, populations, and thresholds are <strong>not</strong> set here; the agent
-        derives all analysis from your data, question, and metadata.json.
-      </div>
+    <div className="page">
+      <header className="page-head">
+        <h2>Configure the run</h2>
+        <p className="subtitle">
+          Set what you want to ask and how FLOW should run. You don’t specify any analysis
+          steps here — the agent works those out from your data and the question.
+        </p>
+      </header>
 
-      <div className="card">
-        <label htmlFor="q">Research question (the most important field)</label>
+      <section className="card">
+        <label htmlFor="q">Research question</label>
+        <p className="hint">The single most important field — describe what you want to find out.</p>
         <textarea
           id="q"
           rows={3}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          placeholder="e.g. How does the CAR-detector signal change across timepoints?"
+          placeholder="e.g. How does the CAR-detector signal change across the timepoints?"
         />
-      </div>
 
-      <div className="card">
-        <label htmlFor="cfg">
-          Full config.yaml{" "}
-          <span className="hint">{exists ? "(saved in project)" : "(default — not yet saved)"}</span>
+        <label htmlFor="desc" style={{ marginTop: 18 }}>
+          Dataset note <span className="optional">optional</span>
         </label>
-        <textarea
-          id="cfg"
-          rows={20}
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
+        <input
+          id="desc"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="A short note about this dataset (not analysis instructions)."
         />
-        <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-          <button onClick={save}>Save config</button>
-          <button className="secondary" onClick={onNext}>
-            Next: Launch Run →
-          </button>
+      </section>
+
+      <section className="card">
+        <h3 className="card-title">Model</h3>
+        <div className="grid-2">
+          <div>
+            <label htmlFor="prov">Provider</label>
+            <select id="prov" value={provider} onChange={(e) => changeProvider(e.target.value)}>
+              {(info?.ui_providers ?? ["mock"]).map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="model">Model</label>
+            <ModelPicker models={models} value={model} onChange={setModel} />
+          </div>
         </div>
-        {status && (
-          <div className={`banner ${status.ok ? "ok" : "err"}`} style={{ marginTop: 12 }}>
-            {status.ok ? "Saved and validated." : `Rejected: ${status.error}`}
+        <p className="hint">
+          Pick a model from the list, or choose “Custom…” to enter any id the provider serves.
+          <code>mock</code> runs the loop offline with no real analysis.
+        </p>
+      </section>
+
+      <section className="card">
+        <button
+          className="disclosure"
+          aria-expanded={showAdvanced}
+          onClick={() => setShowAdvanced((s) => !s)}
+        >
+          {showAdvanced ? "▾" : "▸"} Advanced settings
+        </button>
+        {showAdvanced && (
+          <div className="advanced">
+            <div className="grid-2">
+              <div>
+                <label htmlFor="steps">Max steps</label>
+                <input
+                  id="steps"
+                  type="number"
+                  min={1}
+                  value={maxSteps}
+                  onChange={(e) => setMaxSteps(parseInt(e.target.value || "30", 10))}
+                />
+              </div>
+              <div>
+                <label htmlFor="pcell">Per-cell timeout (s)</label>
+                <input
+                  id="pcell"
+                  type="number"
+                  min={1}
+                  value={perCell}
+                  onChange={(e) => setPerCell(parseInt(e.target.value || "120", 10))}
+                />
+              </div>
+              <div>
+                <label htmlFor="ptraj">Per-run timeout (s)</label>
+                <input
+                  id="ptraj"
+                  type="number"
+                  min={1}
+                  value={perTraj}
+                  onChange={(e) => setPerTraj(parseInt(e.target.value || "1800", 10))}
+                />
+              </div>
+              <div>
+                <label htmlFor="mem">Memory limit</label>
+                <input id="mem" value={memory} onChange={(e) => setMemory(e.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="cpus">CPU limit</label>
+                <input id="cpus" value={cpus} onChange={(e) => setCpus(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="toggles">
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={allowNetwork}
+                  onChange={(e) => setAllowNetwork(e.target.checked)}
+                />
+                <span>
+                  Allow network in the sandbox
+                  <span className="hint"> — lets the agent install packages (off by default).</span>
+                </span>
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={allowRaw}
+                  onChange={(e) => setAllowRaw(e.target.checked)}
+                />
+                <span>
+                  Allow raw data to the model
+                  <span className="hint"> — by default only schemas/summaries are shared.</span>
+                </span>
+              </label>
+            </div>
           </div>
         )}
+      </section>
+
+      <div className="actions">
+        <button className="secondary" onClick={() => save(false)}>
+          Save
+        </button>
+        <button className="primary" onClick={() => save(true)} disabled={!question.trim()}>
+          Save &amp; continue →
+        </button>
+        <button
+          className="ghost"
+          onClick={() => setShowYaml((s) => !s)}
+          style={{ marginLeft: "auto" }}
+        >
+          {showYaml ? "Hide" : "View"} generated config
+        </button>
       </div>
+
+      {status && (
+        <div className={`banner ${status.ok ? "ok" : "err"}`}>
+          {status.ok ? "Saved." : `Could not save: ${status.error}`}
+        </div>
+      )}
+
+      {showYaml && (
+        <section className="card">
+          <h3 className="card-title">config.yaml (generated, read-only)</h3>
+          <pre className="code">{yamlPreview}</pre>
+        </section>
+      )}
     </div>
   );
 }

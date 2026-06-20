@@ -2,8 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Profile, Project } from "../types";
 
-// Page 1: create/select a project and drag-drop the lab's files. Shows per-file
-// validation feedback so non-computational users know what was recognized.
+// Accepted project files, shown as an always-visible reference so the page is informative
+// even before anything is uploaded.
+const ACCEPTED_FILES: { name: string; desc: string }[] = [
+  { name: "metadata.json", desc: "Experiment facts (which detector carries which stain, key dates)." },
+  { name: "flow.csv", desc: "Timepoint sheet — columns label, date." },
+  { name: "alc.csv", desc: "Absolute lymphocyte counts — columns date, alc." },
+  { name: "events.csv / .parquet", desc: "Combined per-event table, or a folder of FCS files." },
+  { name: "true_lab_results.csv", desc: "Optional ground truth — used for evaluation only." },
+];
+
+// Page 1: create/select a project and drag-drop the lab's files, with per-file validation.
 export default function ProjectUpload({
   projects,
   projectId,
@@ -53,121 +62,158 @@ export default function ProjectUpload({
   }
 
   return (
-    <div>
-      <h2>Project & Upload</h2>
+    <div className="page">
+      <header className="page-head">
+        <h2>Project &amp; upload</h2>
+        <p className="subtitle">
+          A project is a folder of your experiment’s files. Create or select one, add your
+          data, and FLOW will validate each file as you go.
+        </p>
+      </header>
 
-      <div className="card">
-        <h3>Select an existing project</h3>
-        {projects.length === 0 && <p className="muted">No projects yet — create one below.</p>}
-        <div className="row">
-          <div>
-            <select
-              value={projectId || ""}
-              onChange={(e) => setProjectId(e.target.value)}
-              aria-label="Select project"
-            >
-              <option value="">— choose —</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.id})
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </div>
+      <div className="split">
+        <div>
+          <section className="card">
+            <h3>Select a project</h3>
+            {projects.length === 0 ? (
+              <p className="muted">No projects yet — create one on the right to begin.</p>
+            ) : (
+              <select
+                value={projectId || ""}
+                onChange={(e) => setProjectId(e.target.value)}
+                aria-label="Select project"
+              >
+                <option value="">— choose —</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.id})
+                  </option>
+                ))}
+              </select>
+            )}
+          </section>
 
-      <div className="card">
-        <h3>Create a new project</h3>
-        <div className="row">
-          <div>
-            <input
-              placeholder="Project name (e.g. Patient-07 flow run)"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-          <button onClick={create}>Create</button>
-        </div>
-      </div>
-
-      {projectId && (
-        <div className="card">
-          <h3>Upload data files</h3>
-          <p className="hint">
-            Drag &amp; drop metadata.json, flow.csv, alc.csv, your cytometry event table
-            or FCS files, and optionally config.yaml / true_lab_results.csv. Files are
-            validated on upload — they are never interpreted as analysis instructions.
-          </p>
-          <div
-            className={`dropzone ${drag ? "drag" : ""}`}
-            onClick={() => inputRef.current?.click()}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDrag(true);
-            }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDrag(false);
-              upload(e.dataTransfer.files);
-            }}
-          >
-            {busy ? <span className="spinner" /> : "Drop files here, or click to browse"}
-          </div>
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            style={{ display: "none" }}
-            onChange={(e) => e.target.files && upload(e.target.files)}
-          />
-        </div>
-      )}
-
-      {profile && (
-        <div className="card">
-          <h3>Validation</h3>
-          {profile.notes.map((n, i) => (
-            <div key={i} className="banner warn">
-              {n}
+          <section className="card">
+            <h3>Create a new project</h3>
+            <div className="field">
+              <input
+                placeholder="Project name (e.g. Patient-07 flow run)"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && create()}
+              />
             </div>
-          ))}
-          <table>
-            <thead>
-              <tr>
-                <th>File</th>
-                <th>Recognized as</th>
-                <th>Rows</th>
-                <th>Columns</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {profile.files.map((f) => (
-                <tr key={f.name}>
-                  <td>{f.name}</td>
-                  <td>{f.kind}</td>
-                  <td>{f.rows ?? "—"}</td>
-                  <td className="muted">{f.columns.join(", ") || f.detail}</td>
-                  <td>
-                    {f.ok ? (
-                      <span className="badge ok">ok</span>
-                    ) : (
-                      <span className="badge err" title={f.detail}>
-                        error
-                      </span>
-                    )}
-                  </td>
-                </tr>
+            <div className="actions">
+              <button className="primary" onClick={create}>
+                Create project
+              </button>
+            </div>
+          </section>
+
+          {projectId && (
+            <section className="card">
+              <h3>Upload data files</h3>
+              <p className="hint">
+                Drag &amp; drop your files below. They’re validated on upload and never
+                interpreted as analysis instructions.
+              </p>
+              <div
+                className={`dropzone ${drag ? "drag" : ""}`}
+                onClick={() => inputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDrag(true);
+                }}
+                onDragLeave={() => setDrag(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDrag(false);
+                  upload(e.dataTransfer.files);
+                }}
+              >
+                {busy ? <span className="spinner" /> : "Drop files here, or click to browse"}
+              </div>
+              <input
+                ref={inputRef}
+                type="file"
+                multiple
+                style={{ display: "none" }}
+                onChange={(e) => e.target.files && upload(e.target.files)}
+              />
+            </section>
+          )}
+
+          {profile && (
+            <section className="card">
+              <h3>Validation</h3>
+              {profile.notes.map((n, i) => (
+                <div key={i} className="banner warn">
+                  {n}
+                </div>
               ))}
-            </tbody>
-          </table>
-          <div style={{ marginTop: 14 }}>
-            <button onClick={onNext}>Next: Config →</button>
-          </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Recognized as</th>
+                    <th>Rows</th>
+                    <th>Columns</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {profile.files.map((f) => (
+                    <tr key={f.name}>
+                      <td>{f.name}</td>
+                      <td>{f.kind}</td>
+                      <td>{f.rows ?? "—"}</td>
+                      <td className="muted">{f.columns.join(", ") || f.detail}</td>
+                      <td>
+                        {f.ok ? (
+                          <span className="badge ok">ok</span>
+                        ) : (
+                          <span className="badge err" title={f.detail}>
+                            error
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="actions" style={{ marginTop: 18 }}>
+                <button className="primary" onClick={onNext}>
+                  Next: configure →
+                </button>
+              </div>
+            </section>
+          )}
         </div>
-      )}
+
+        <aside className="aside">
+          <section className="card">
+            <div className="card-title">How it works</div>
+            <ol className="steps-list">
+              <li>Create a project and upload your data files.</li>
+              <li>Set the research question and pick a model.</li>
+              <li>Launch — the agent writes and runs code in a sandbox.</li>
+              <li>Watch it work, then read its conclusion and artifacts.</li>
+            </ol>
+          </section>
+
+          <section className="card">
+            <div className="card-title">Accepted files</div>
+            <ul className="reflist">
+              {ACCEPTED_FILES.map((f) => (
+                <li key={f.name}>
+                  <div className="name">{f.name}</div>
+                  <div className="desc">{f.desc}</div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </aside>
+      </div>
     </div>
   );
 }

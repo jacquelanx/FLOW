@@ -14,9 +14,14 @@ export default function NotebookViewer({ runId }: { runId: string }) {
   const cells: any[] = nb.cells || [];
 
   return (
-    <div>
-      <h2>Notebook</h2>
-      {cells.length === 0 && <p className="muted">No cells yet.</p>}
+    <div className="page">
+      <header className="page-head">
+        <h2>Notebook</h2>
+        <p className="subtitle">
+          The notebook the agent built — code cells with their text and plot outputs.
+        </p>
+      </header>
+      {cells.length === 0 && <div className="empty">No cells yet.</div>}
       {cells.map((c, i) => (
         <div className="notebook-cell" key={i}>
           <div className="src">

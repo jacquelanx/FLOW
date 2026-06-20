@@ -41,6 +41,37 @@ _OPENAI_COMPAT = {
 
 SUPPORTED_PROVIDERS = ["mock", "ollama", *sorted(_OPENAI_COMPAT.keys())]
 
+# Curated, commonly-available models per provider, for the UI dropdowns. This is a
+# convenience catalog only — any model id the provider serves still works (the UI offers a
+# "custom" escape), and model availability changes over time, so treat this as defaults.
+MODEL_CATALOG: dict[str, list[str]] = {
+    "mock": ["mock"],
+    "ollama": ["qwen2.5-coder", "qwen2.5", "llama3.1", "deepseek-coder-v2"],
+    "gemini": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+    "groq": [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b",
+        "moonshotai/kimi-k2-instruct",
+    ],
+    "openrouter": [
+        "meta-llama/llama-3.3-70b-instruct",
+        "deepseek/deepseek-chat",
+        "google/gemini-2.0-flash-exp:free",
+    ],
+    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "openai": ["gpt-4o-mini", "gpt-4o", "o4-mini"],
+}
+
+# Providers shown in the UI (excludes the "google" alias of "gemini" to avoid confusion).
+UI_PROVIDERS: list[str] = [p for p in SUPPORTED_PROVIDERS if p != "google"]
+
+
+def default_model(provider: str) -> str:
+    """Return a sensible default model id for a provider (first in the catalog)."""
+    models = MODEL_CATALOG.get((provider or "").strip().lower())
+    return models[0] if models else ""
+
 
 def build_provider(provider: str, model: str) -> Provider:
     """Construct a Provider instance for ``provider``/``model``.

@@ -2,13 +2,30 @@
 
 import type {
   Artifact,
+  ConfigResponse,
   DockerHealth,
   Profile,
   Project,
+  ProvidersInfo,
   Run,
   RunStatus,
   StepRecord,
 } from "./types";
+
+export interface ConfigForm {
+  question: string;
+  description?: string;
+  provider: string;
+  model: string;
+  max_steps: number;
+  per_cell_timeout?: number;
+  per_trajectory_timeout?: number;
+  memory?: string;
+  cpus?: string;
+  pids_limit?: number;
+  allow_network?: boolean;
+  allow_raw_data_to_model?: boolean;
+}
 
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -25,6 +42,9 @@ export const api = {
   async providers(): Promise<string[]> {
     const r = await j<{ providers: string[] }>(await fetch("/api/providers"));
     return r.providers;
+  },
+  async providersInfo(): Promise<ProvidersInfo> {
+    return j(await fetch("/api/providers"));
   },
   async listProjects(): Promise<Project[]> {
     const r = await j<{ projects: Project[] }>(await fetch("/api/projects"));
@@ -50,7 +70,7 @@ export const api = {
     fd.append("file", file);
     return j(await fetch(`/api/projects/${pid}/files`, { method: "POST", body: fd }));
   },
-  async getConfig(pid: string): Promise<{ content: string; exists: boolean }> {
+  async getConfig(pid: string): Promise<ConfigResponse> {
     return j(await fetch(`/api/projects/${pid}/config`));
   },
   async saveConfig(pid: string, content: string): Promise<{ ok: boolean; error?: string }> {
@@ -59,6 +79,18 @@ export const api = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content }),
+      }),
+    );
+  },
+  async saveConfigForm(
+    pid: string,
+    form: ConfigForm,
+  ): Promise<{ ok: boolean; error?: string; content?: string }> {
+    return j(
+      await fetch(`/api/projects/${pid}/config/form`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
       }),
     );
   },

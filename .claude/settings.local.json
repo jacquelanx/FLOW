@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pkill -f \"flow.api.app:app\")",
+      "Bash(pkill -f uvicorn)",
+      "Bash(pkill -f vite)",
+      "Bash(lsof -ti:5173)",
+      "Bash(xargs kill -9)",
+      "Bash(lsof -ti:8000)"
+    ]
+  }
+}

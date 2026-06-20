@@ -32,50 +32,63 @@ export default function ArtifactBrowser({ runId }: { runId: string }) {
   }
 
   return (
-    <div>
-      <h2>Artifacts</h2>
+    <div className="page">
+      <header className="page-head">
+        <h2>Artifacts</h2>
+        <p className="subtitle">
+          Every file this run produced. Select one to preview, or download the whole run.
+        </p>
+      </header>
       <div className="card">
         <a href={api.downloadUrl(runId)}>
           <button>Download run (.zip)</button>
         </a>
       </div>
 
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-        <div className="card" style={{ flex: "0 0 320px" }}>
+      <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+        <div className="card" style={{ flex: "0 0 260px" }}>
           <table>
             <thead>
               <tr>
                 <th>Artifact</th>
                 <th>Type</th>
-                <th>Size</th>
               </tr>
             </thead>
             <tbody>
-              {artifacts.map((a) => (
-                <tr
-                  key={a.path}
-                  onClick={() => open(a)}
-                  style={{ cursor: "pointer", background: selected?.path === a.path ? "var(--panel-2)" : undefined }}
-                >
-                  <td>{a.path}</td>
-                  <td>{a.kind}</td>
-                  <td className="muted">{a.size}</td>
-                </tr>
-              ))}
+              {artifacts.map((a) => {
+                const sel = selected?.path === a.path;
+                return (
+                  <tr
+                    key={a.path}
+                    onClick={() => open(a)}
+                    style={{
+                      cursor: "pointer",
+                      background: sel ? "var(--ink)" : undefined,
+                      color: sel ? "#fff" : undefined,
+                    }}
+                  >
+                    <td>{a.path}</td>
+                    <td>{a.kind}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
 
         <div className="card" style={{ flex: 1, minWidth: 0 }}>
-          {!selected && <p className="muted">Select an artifact to preview.</p>}
+          {!selected && <div className="empty">Select an artifact to preview.</div>}
           {selected && selected.kind === "image" && (
-            <img className="plot" src={api.artifactUrl(runId, selected.path)} alt={selected.name} />
+            <img
+              className="plot"
+              style={{ width: "100%" }}
+              src={api.artifactUrl(runId, selected.path)}
+              alt={selected.name}
+            />
           )}
-          {selected && selected.kind === "table" && (
-            <CsvTable text={preview} />
-          )}
+          {selected && selected.kind === "table" && <CsvTable text={preview} />}
           {selected && selected.kind !== "image" && selected.kind !== "table" && (
-            <pre className="code" style={{ maxHeight: 500, overflow: "auto" }}>{preview}</pre>
+            <pre className="code" style={{ maxHeight: 560, overflow: "auto" }}>{preview}</pre>
           )}
         </div>
       </div>

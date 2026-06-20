@@ -38,8 +38,13 @@ export default function ResultsDashboard({
   const tables = artifacts.filter((a) => a.kind === "table");
 
   return (
-    <div>
-      <h2>Results</h2>
+    <div className="page">
+      <header className="page-head">
+        <h2>Results</h2>
+        <p className="subtitle">
+          The agent’s submitted conclusion, plus any plots and tables it produced.
+        </p>
+      </header>
 
       {!["completed", "failed", "error"].includes(status) && (
         <div className="banner warn">
