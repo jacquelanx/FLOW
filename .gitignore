@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets / env
+.env
+.env.*
+
+# Node / frontend
+node_modules/
+frontend/dist/
+# tsc -b build outputs
+*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
+
+# Runtime data (paths overridable via env)
+var/
+examples/demo/
+*.sqlite
+*.sqlite3
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
