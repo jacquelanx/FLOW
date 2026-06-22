@@ -62,44 +62,67 @@ def _cmd_run(args: argparse.Namespace) -> int:
         cfg.runtime.provider = args.provider
     if args.model:
         cfg.runtime.model = args.model
+    if args.meta_provider:
+        cfg.runtime.meta_provider = args.meta_provider
+    if args.meta_model:
+        cfg.runtime.meta_model = args.meta_model
     if args.max_steps:
         cfg.runtime.max_steps = args.max_steps
 
-    run_id = uuid.uuid4().hex[:12]
-    run_dir = Path(args.out).resolve() / run_id if args.out else data_dir / "runs" / run_id
+    n = max(1, int(args.trajectories or 1))
+    batch_id = uuid.uuid4().hex[:12]
+    batch_dir = Path(args.out).resolve() / batch_id if args.out else data_dir / "runs" / batch_id
 
-    print(f"FLOW run {run_id}")
-    print(f"  question : {cfg.question}")
-    print(f"  provider : {cfg.runtime.provider} / {cfg.runtime.model}")
-    print(f"  data     : {data_dir}")
-    print(f"  out      : {run_dir}")
+    print(f"FLOW run {batch_id}")
+    print(f"  question     : {cfg.question}")
+    print(f"  provider     : {cfg.runtime.provider} / {cfg.runtime.model}")
+    meta_p = cfg.runtime.meta_provider or cfg.runtime.provider
+    meta_m = cfg.runtime.meta_model or cfg.runtime.model
+    print(f"  consensus    : {meta_p} / {meta_m}")
+    print(f"  trajectories : {n}" + (" (consensus meta-analysis)" if n > 1 else ""))
+    print(f"  data         : {data_dir}")
+    print(f"  out          : {batch_dir}")
     print("  executing inside Docker (BixBench-env)...\n")
 
     from flow.env.docker_runtime import DockerUnavailableError
-    from flow.runner import run_analysis
+    from flow.runner import run_batch
 
-    def _on_step(rec) -> None:
-        preview = (rec.observation or "").strip().splitlines()
-        head = preview[0] if preview else ""
-        print(f"  step {rec.step:>2} [{rec.tool}] {head[:100]}")
+    def _on_traj_status(idx: int, status: str, info: dict) -> None:
+        if status == "running":
+            print(f"  ── trajectory {idx} started")
+        else:
+            tag = "submitted" if info.get("submitted") else f"no answer ({status})"
+            print(f"  ── trajectory {idx} finished: {tag}")
+
+    def _on_step(idx: int, rec) -> None:
+        head = ((rec.observation or "").strip().splitlines() or [""])[0]
+        print(f"     t{idx} step {rec.step:>2} [{rec.tool}] {head[:80]}")
+
+    def _on_phase(phase: str) -> None:
+        if phase == "synthesizing":
+            print("\n  synthesizing consensus from all trajectories...\n")
 
     try:
-        result, meta = run_analysis(
-            data_dir=data_dir, config=cfg, run_dir=run_dir, run_id=run_id, image=args.image,
-            on_step=_on_step,
+        bres = run_batch(
+            data_dir=data_dir, config=cfg, batch_dir=batch_dir, n_trajectories=n,
+            batch_id=batch_id, image=args.image,
+            on_trajectory_status=_on_traj_status, on_step=_on_step, on_phase=_on_phase,
         )
     except DockerUnavailableError as e:
         print(f"\nerror: {e}", file=sys.stderr)
         return 3
 
-    print()
-    if result.submitted:
-        print("=== ANSWER ===")
-        print(result.answer)
-        print(f"\nArtifacts: {run_dir}")
+    cons = bres.consensus or {}
+    n_sub = sum(1 for t in bres.trajectories if t["submitted"])
+    print(f"\nTrajectories: {n_sub}/{n} produced an answer.")
+    if cons.get("consensus"):
+        label = "CONSENSUS" if cons.get("synthesized") else "CONSENSUS (single trajectory)"
+        print(f"\n=== {label} ===")
+        print(cons["consensus"])
+        print(f"\nArtifacts: {batch_dir}")
         return 0
-    print(f"RUN FAILED: {result.failure_reason}", file=sys.stderr)
-    print(f"Artifacts (partial): {run_dir}", file=sys.stderr)
+    print(f"RUN FAILED: {cons.get('failure_reason')}", file=sys.stderr)
+    print(f"Artifacts (partial): {batch_dir}", file=sys.stderr)
     return 1
 
 
@@ -118,12 +141,23 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--image", default="flow-bixbench-env:1.0")
     pd.set_defaults(func=_cmd_doctor)
 
-    pr = sub.add_parser("run", help="Run one trajectory inside Docker.")
+    pr = sub.add_parser(
+        "run",
+        help="Run N independent trajectories inside Docker + a consensus meta-analysis.",
+    )
     pr.add_argument("--data", required=True, help="Project/data directory.")
     pr.add_argument("--question", help="Research question (overrides config.yaml).")
     pr.add_argument("--provider", help="mock | ollama | gemini | groq | openrouter | deepseek | openai")
     pr.add_argument("--model", help="Model id (e.g. gemini-2.0-flash, qwen2.5-coder).")
+    pr.add_argument("--meta-provider", dest="meta_provider",
+                    help="Provider for the consensus synthesis (default: same as --provider).")
+    pr.add_argument("--meta-model", dest="meta_model",
+                    help="Model for the consensus synthesis (default: same as --model).")
     pr.add_argument("--max-steps", type=int, dest="max_steps")
+    pr.add_argument(
+        "--trajectories", type=int, default=1,
+        help="Number of independent trajectories to run, then synthesize (default: 1).",
+    )
     pr.add_argument("--out", help="Output root for artifacts (default: <data>/runs).")
     pr.add_argument("--image", default="flow-bixbench-env:1.0")
     pr.set_defaults(func=_cmd_run)

@@ -57,3 +57,11 @@ class MockProvider(Provider):
             },
             id=f"call_mock_submit_{prior}",
         )
+
+    def complete(self, messages: list[Message]) -> str:
+        """Deterministic placeholder consensus — performs no real synthesis."""
+        return (
+            "[MOCK PROVIDER] Placeholder consensus. The offline mock provider does not "
+            "synthesize a real consensus; it only exercises the meta-analysis pipeline. "
+            "Use a real provider for an actual consensus conclusion."
+        )

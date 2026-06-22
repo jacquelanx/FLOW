@@ -6,7 +6,12 @@
       "Bash(pkill -f vite)",
       "Bash(lsof -ti:5173)",
       "Bash(xargs kill -9)",
-      "Bash(lsof -ti:8000)"
+      "Bash(lsof -ti:8000)",
+      "Bash(npm run *)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(docker rmi *)",
+      "Bash(rm -f /tmp/Dockerfile.flowtest /tmp/flow_ids.txt)",
+      "Bash(pkill -f \"flow.api.app:app\" 2>/dev/null; pkill -f uvicorn 2>/dev/null; pkill -f vite 2>/dev/null; lsof -ti:5173 | xargs kill -9 2>/dev/null; lsof -ti:8000 | xargs kill -9 2>/dev/null; rm -f /tmp/flow_pid.txt; rm -rf var frontend/dist; echo \"stopped + cleaned\")"
     ]
   }
 }

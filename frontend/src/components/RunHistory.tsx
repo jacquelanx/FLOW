@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Run } from "../types";
+import type { Batch } from "../types";
 
-// Persistent, clickable list of past runs (read from the backend DB, so it survives
-// refresh/restart). Selecting one opens its results — without hijacking the launcher.
+// Persistent, clickable list of past consensus runs (read from the backend DB, so it
+// survives refresh/restart). Selecting one opens its results — without hijacking the launcher.
 export default function RunHistory({
   projectId,
   onSelectRun,
@@ -11,7 +11,7 @@ export default function RunHistory({
   projectId: string;
   onSelectRun: (rid: string) => void;
 }) {
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [runs, setRuns] = useState<Batch[]>([]);
 
   useEffect(() => {
     api.listRuns(projectId).then(setRuns).catch(() => setRuns([]));
@@ -22,8 +22,8 @@ export default function RunHistory({
       <header className="page-head">
         <h2>Run history</h2>
         <p className="subtitle">
-          Every run for this project is saved here and survives a refresh. Open one to revisit
-          its conclusion, notebook, and artifacts.
+          Every consensus run for this project is saved here and survives a refresh. Open one to
+          revisit its consensus, trajectories, and artifacts.
         </p>
       </header>
       <div className="card">
@@ -38,7 +38,8 @@ export default function RunHistory({
               <tr>
                 <th>When</th>
                 <th>Question</th>
-                <th>Provider / Model</th>
+                <th>Model</th>
+                <th>Trajectories</th>
                 <th>Status</th>
                 <th></th>
               </tr>
@@ -47,12 +48,16 @@ export default function RunHistory({
               {runs.map((r) => (
                 <tr key={r.id}>
                   <td className="muted">{new Date(r.created_at * 1000).toLocaleString()}</td>
-                  <td title={r.question}>{truncate(r.question, 60)}</td>
-                  <td className="muted">
-                    {r.provider} / {r.model}
+                  <td title={r.question}>{truncate(r.question, 48)}</td>
+                  <td className="muted">{r.model}</td>
+                  <td>
+                    {r.n_trajectories}
+                    {r.status === "completed" && (
+                      <span className="muted"> ({r.n_submitted} answered)</span>
+                    )}
                   </td>
                   <td>
-                    <StatusBadge status={r.status} submitted={r.submitted} />
+                    <StatusBadge status={r.status} consensusOk={r.consensus_ok} />
                   </td>
                   <td>
                     <button className="secondary" onClick={() => onSelectRun(r.id)}>
@@ -73,8 +78,9 @@ function truncate(s: string, n: number) {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
-function StatusBadge({ status, submitted }: { status: string; submitted: number }) {
-  if (status === "completed" && submitted) return <span className="badge ok">completed</span>;
-  if (status === "running" || status === "pending") return <span className="badge run">{status}</span>;
+function StatusBadge({ status, consensusOk }: { status: string; consensusOk: number }) {
+  if (status === "completed" && consensusOk) return <span className="badge ok">consensus</span>;
+  if (["running", "pending", "synthesizing"].includes(status))
+    return <span className="badge run">{status}</span>;
   return <span className="badge err">{status}</span>;
 }

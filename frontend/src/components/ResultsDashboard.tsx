@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Artifact, RunStatus } from "../types";
+import type { BatchStatus } from "../types";
 
-// Status-aware results view: shows "running…" until complete, the submitted answer when
-// done, rendered plots and saved tables, and a clear error if the run failed.
+// Status-aware results view for a consensus run: the synthesized consensus up top, then the
+// individual trajectory conclusions it was distilled from. Clear messaging while running or
+// on failure — never a dead end.
 export default function ResultsDashboard({
   runId,
   onBrowse,
@@ -11,19 +12,16 @@ export default function ResultsDashboard({
   runId: string;
   onBrowse: () => void;
 }) {
-  const [run, setRun] = useState<RunStatus | null>(null);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [batch, setBatch] = useState<BatchStatus | null>(null);
+  const [open, setOpen] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     let active = true;
     async function load() {
-      const r = await api.getRun(runId);
+      const b = await api.getRun(runId);
       if (!active) return;
-      setRun(r);
-      setArtifacts(await api.listArtifacts(runId));
-      if (!["completed", "failed", "error"].includes(r.status)) {
-        setTimeout(load, 2000);
-      }
+      setBatch(b);
+      if (!["completed", "failed", "error"].includes(b.status)) setTimeout(load, 2000);
     }
     load();
     return () => {
@@ -31,82 +29,104 @@ export default function ResultsDashboard({
     };
   }, [runId]);
 
-  if (!run) return <p>Loading…</p>;
+  if (!batch) return <p className="muted">Loading…</p>;
 
-  const status = run.status;
-  const images = artifacts.filter((a) => a.kind === "image");
-  const tables = artifacts.filter((a) => a.kind === "table");
+  const { status, consensus } = batch;
+  const running = !["completed", "failed", "error"].includes(status);
+  const nSubmitted = batch.trajectories.filter((t) => t.submitted).length;
 
   return (
     <div className="page">
       <header className="page-head">
         <h2>Results</h2>
         <p className="subtitle">
-          The agent’s submitted conclusion, plus any plots and tables it produced.
+          A consensus synthesized from {batch.run.n_trajectories} independent trajectories,
+          with each trajectory’s own conclusion below it.
         </p>
       </header>
 
-      {!["completed", "failed", "error"].includes(status) && (
+      {running && (
         <div className="banner warn">
-          <span className="spinner" /> Run is {status}… results will appear when it finishes.
+          <span className="spinner" /> Run is {status}… {nSubmitted}/{batch.run.n_trajectories}{" "}
+          trajectories done. The consensus appears once all finish.
         </div>
       )}
 
-      {(status === "failed" || status === "error") && (
+      {(status === "failed" || status === "error") && !consensus.consensus && (
         <div className="banner err">
-          <strong>Run did not produce an answer.</strong>
+          <strong>No consensus could be formed.</strong>
           <div style={{ marginTop: 6 }}>
-            {String((run.run_meta as any)?.failure_reason || (run.live as any)?.failure_reason ||
-              "The agent did not submit an answer, or execution could not start (e.g. Docker missing).")}
+            {consensus.failure_reason ||
+              batch.run.failure_reason ||
+              "No trajectory produced an answer (or execution could not start, e.g. Docker missing)."}
           </div>
         </div>
       )}
 
-      {status === "completed" && run.answer && (
-        <div className="card">
-          <h3>Submitted conclusion</h3>
-          <div className="code">{run.answer}</div>
-        </div>
+      {consensus.consensus && (
+        <section className="card">
+          <div className="card-title">
+            Consensus
+            {consensus.synthesized === false && " (single trajectory)"}
+          </div>
+          <div className="code" style={{ fontSize: "0.95rem" }}>{consensus.consensus}</div>
+          <p className="hint">
+            {consensus.synthesized
+              ? `Synthesized from ${consensus.n_submitted} of ${consensus.n_total} trajectories that produced an answer.`
+              : `Based on ${nSubmitted} trajectory${nSubmitted === 1 ? "" : "ies"} that produced an answer.`}
+          </p>
+        </section>
       )}
 
-      {images.length > 0 && (
-        <div className="card">
-          <h3>Plots</h3>
-          {images.map((a) => (
-            <div key={a.path}>
-              <div className="muted">{a.path}</div>
-              <img className="plot" src={api.artifactUrl(runId, a.path)} alt={a.name} />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {tables.length > 0 && (
-        <div className="card">
-          <h3>Saved tables</h3>
-          <ul>
-            {tables.map((a) => (
-              <li key={a.path}>
-                <a href={api.artifactUrl(runId, a.path)} target="_blank" rel="noreferrer">
-                  {a.path}
-                </a>{" "}
-                <span className="muted">({a.size} bytes)</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <section className="card">
+        <div className="card-title">Trajectory conclusions</div>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Status</th>
+              <th>Steps</th>
+              <th>Conclusion</th>
+            </tr>
+          </thead>
+          <tbody>
+            {batch.trajectories.map((t) => {
+              const isOpen = open[t.idx];
+              const text = t.answer || t.failure_reason || "—";
+              return (
+                <tr key={t.idx} onClick={() => setOpen({ ...open, [t.idx]: !isOpen })} style={{ cursor: "pointer" }}>
+                  <td>#{t.idx}</td>
+                  <td>
+                    {t.submitted ? (
+                      <span className="badge ok">answered</span>
+                    ) : (
+                      <span className="badge err">{t.status}</span>
+                    )}
+                  </td>
+                  <td>{t.steps}</td>
+                  <td>{isOpen ? text : truncate(text, 90)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <p className="hint">Click a row to expand its full conclusion.</p>
+      </section>
 
       <div className="card">
-        <div style={{ display: "flex", gap: 10 }}>
+        <div className="actions">
           <button className="secondary" onClick={onBrowse}>
-            Browse all artifacts →
+            Browse artifacts →
           </button>
           <a href={api.downloadUrl(runId)}>
-            <button>Download run (.zip)</button>
+            <button className="primary">Download run (.zip)</button>
           </a>
         </div>
       </div>
     </div>
   );
+}
+
+function truncate(s: string, n: number) {
+  return s.length > n ? s.slice(0, n) + "…" : s;
 }

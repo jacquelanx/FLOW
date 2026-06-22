@@ -2,14 +2,15 @@
 
 import type {
   Artifact,
+  Batch,
+  BatchStatus,
   ConfigResponse,
   DockerHealth,
   Profile,
   Project,
   ProvidersInfo,
-  Run,
-  RunStatus,
   StepRecord,
+  TrajectorySummary,
 } from "./types";
 
 export interface ConfigForm {
@@ -17,6 +18,8 @@ export interface ConfigForm {
   description?: string;
   provider: string;
   model: string;
+  meta_provider?: string;
+  meta_model?: string;
   max_steps: number;
   per_cell_timeout?: number;
   per_trajectory_timeout?: number;
@@ -99,8 +102,11 @@ export const api = {
     question?: string;
     provider: string;
     model: string;
+    meta_provider?: string;
+    meta_model?: string;
     max_steps?: number;
-  }): Promise<{ run_id: string; status: string }> {
+    n_trajectories: number;
+  }): Promise<{ run_id: string; status: string; n_trajectories: number }> {
     return j(
       await fetch("/api/runs", {
         method: "POST",
@@ -109,26 +115,34 @@ export const api = {
       }),
     );
   },
-  async listRuns(projectId?: string): Promise<Run[]> {
+  async listRuns(projectId?: string): Promise<Batch[]> {
     const q = projectId ? `?project_id=${projectId}` : "";
-    const r = await j<{ runs: Run[] }>(await fetch(`/api/runs${q}`));
+    const r = await j<{ runs: Batch[] }>(await fetch(`/api/runs${q}`));
     return r.runs;
   },
-  async getRun(rid: string): Promise<RunStatus> {
+  async getRun(rid: string): Promise<BatchStatus> {
     return j(await fetch(`/api/runs/${rid}`));
   },
-  async getSteps(rid: string): Promise<{ steps: StepRecord[]; status: string }> {
-    return j(await fetch(`/api/runs/${rid}/steps`));
+  async getTrajectories(rid: string): Promise<TrajectorySummary[]> {
+    const r = await j<{ trajectories: TrajectorySummary[] }>(
+      await fetch(`/api/runs/${rid}/trajectories`),
+    );
+    return r.trajectories;
   },
-  async getNotebook(rid: string): Promise<any> {
-    return j(await fetch(`/api/runs/${rid}/notebook`));
+  async getSteps(rid: string, idx: number): Promise<{ steps: StepRecord[]; status: string }> {
+    return j(await fetch(`/api/runs/${rid}/trajectories/${idx}/steps`));
   },
-  async listArtifacts(rid: string): Promise<Artifact[]> {
-    const r = await j<{ artifacts: Artifact[] }>(await fetch(`/api/runs/${rid}/artifacts`));
+  async getNotebook(rid: string, idx: number): Promise<any> {
+    return j(await fetch(`/api/runs/${rid}/trajectories/${idx}/notebook`));
+  },
+  async listArtifacts(rid: string, idx: number): Promise<Artifact[]> {
+    const r = await j<{ artifacts: Artifact[] }>(
+      await fetch(`/api/runs/${rid}/trajectories/${idx}/artifacts`),
+    );
     return r.artifacts;
   },
-  artifactUrl(rid: string, path: string): string {
-    return `/api/runs/${rid}/artifacts/${path}`;
+  artifactUrl(rid: string, idx: number, path: string): string {
+    return `/api/runs/${rid}/trajectories/${idx}/artifacts/${path}`;
   },
   downloadUrl(rid: string): string {
     return `/api/runs/${rid}/download`;

@@ -130,7 +130,7 @@ def test_config_default_returned(client):
     assert "question" in resp.json()["content"]
 
 
-def test_run_lifecycle_with_stubbed_runner(client, monkeypatch):
+def test_consensus_batch_lifecycle_with_stubbed_runner(client, monkeypatch):
     c, appmod = client
     pid = c.post("/api/projects", json={"name": "x"}).json()["id"]
     c.post(
@@ -138,55 +138,76 @@ def test_run_lifecycle_with_stubbed_runner(client, monkeypatch):
         files={"file": ("events.csv", b"sample_id,label,DET-A\nS01,Baseline,1.0\n", "text/plain")},
     )
 
-    # Stub the Docker-backed runner so the API can be tested without Docker.
-    def fake_run_analysis(*, data_dir, config, run_dir, run_id=None, on_step=None, **kw):
-        from flow.agent.react import AgentResult, StepRecord
-        from flow.trajectory import RunMetadata, Trajectory
+    # Stub the Docker-backed batch runner so the API surface is tested without Docker.
+    # It writes per-trajectory artifacts + batch.json exactly like the real run_batch.
+    def fake_run_batch(*, data_dir, config, batch_dir, n_trajectories, batch_id=None,
+                       on_phase=None, on_trajectory_status=None, on_step=None, **kw):
+        from flow.runner import BatchResult
+        from flow.trajectory import Trajectory
 
-        traj = Trajectory(run_dir)
-        rec = StepRecord(1, "submit_answer", {"answer": "ok"}, "done", True, 1.0)
-        traj.append_action({"step": 1, "tool": "submit_answer", "observation": "done"})
-        (Path(run_dir) / "notebook.ipynb").write_text('{"cells": [], "nbformat": 4}')
-        (Path(run_dir) / "answer.txt").write_text("Synthetic answer.")
-        result = AgentResult(submitted=True, answer="Synthetic answer.", steps=[rec])
-        meta = RunMetadata(
-            run_id=run_id or "x", question=config.question, provider=config.runtime.provider,
-            model=config.runtime.model, image="img", image_digest=None,
-            max_steps=config.runtime.max_steps, limits={}, started_at=time.time(),
-        )
-        traj.finalize_meta = None
-        (Path(run_dir) / "run.json").write_text('{"submitted": true}')
-        if on_step:
-            on_step(rec)
-        return result, meta
+        if on_phase:
+            on_phase("running")
+        results = []
+        for idx in range(n_trajectories):
+            tdir = Path(batch_dir) / "trajectories" / str(idx)
+            traj = Trajectory(tdir)
+            traj.append_action({"step": 1, "tool": "submit_answer", "observation": "done"})
+            (tdir / "notebook.ipynb").write_text('{"cells": [], "nbformat": 4}')
+            (tdir / "answer.txt").write_text(f"Answer from trajectory {idx}.")
+            if on_step:
+                from flow.agent.react import StepRecord
+                on_step(idx, StepRecord(1, "submit_answer", {}, "done", True, 1.0))
+            summary = {"idx": idx, "submitted": True, "answer": f"Answer from trajectory {idx}.",
+                       "failure_reason": None, "steps": 1, "artifact_dir": str(tdir)}
+            results.append(summary)
+            if on_trajectory_status:
+                on_trajectory_status(idx, "completed", summary)
+        if on_phase:
+            on_phase("synthesizing")
+        consensus = {"consensus": "Synthesized consensus.", "synthesized": True,
+                     "n_submitted": n_trajectories, "n_total": n_trajectories, "failure_reason": None}
+        (Path(batch_dir) / "consensus.txt").write_text("Synthesized consensus.")
+        import json as _json
+        (Path(batch_dir) / "batch.json").write_text(_json.dumps(
+            {"consensus": consensus, "trajectories": results}))
+        if on_phase:
+            on_phase("done")
+        return BatchResult(batch_id=batch_id or "b", n_trajectories=n_trajectories,
+                           temperature=0.7, trajectories=results, consensus=consensus)
 
-    monkeypatch.setattr(appmod, "run_analysis", fake_run_analysis)
+    monkeypatch.setattr(appmod, "run_batch", fake_run_batch)
 
     start = c.post(
         "/api/runs",
-        json={"project_id": pid, "question": "What is the trend?", "provider": "mock", "model": "mock"},
+        json={"project_id": pid, "question": "What is the trend?", "provider": "mock",
+              "model": "mock", "n_trajectories": 3},
     )
     assert start.status_code == 200
+    assert start.json()["n_trajectories"] == 3
     rid = start.json()["run_id"]
 
-    # Poll until completed.
-    for _ in range(50):
+    for _ in range(60):
         status = c.get(f"/api/runs/{rid}").json()
         if status["status"] in {"completed", "failed", "error"}:
             break
         time.sleep(0.05)
     assert status["status"] == "completed"
-    assert status["answer"] == "Synthetic answer."
+    assert status["consensus"]["consensus"] == "Synthesized consensus."
+    assert status["consensus"]["synthesized"] is True
+    assert len(status["trajectories"]) == 3
+    assert all(t["submitted"] for t in status["trajectories"])
 
-    # Steps, notebook, artifacts.
-    steps = c.get(f"/api/runs/{rid}/steps").json()
+    # Per-trajectory steps / notebook / artifacts are scoped by index.
+    steps = c.get(f"/api/runs/{rid}/trajectories/1/steps").json()
     assert len(steps["steps"]) >= 1
-    nb = c.get(f"/api/runs/{rid}/notebook").json()
+    nb = c.get(f"/api/runs/{rid}/trajectories/2/notebook").json()
     assert "cells" in nb
-    arts = c.get(f"/api/runs/{rid}/artifacts").json()["artifacts"]
+    arts = c.get(f"/api/runs/{rid}/trajectories/0/artifacts").json()["artifacts"]
     assert any(a["name"] == "answer.txt" for a in arts)
+    # Out-of-range trajectory is a 404.
+    assert c.get(f"/api/runs/{rid}/trajectories/9/steps").status_code == 404
 
-    # Run history persists in DB.
+    # History persists in DB.
     runs = c.get("/api/runs").json()["runs"]
     assert any(rr["id"] == rid for rr in runs)
 
@@ -194,14 +215,13 @@ def test_run_lifecycle_with_stubbed_runner(client, monkeypatch):
 def test_download_zip(client, monkeypatch):
     c, appmod = client
     pid = c.post("/api/projects", json={"name": "x"}).json()["id"]
-    # Create a run dir manually via DB + filesystem.
     import flow.db as db
 
-    rid = "run123abc"
-    run_dir = db.artifacts_root() / rid
-    run_dir.mkdir(parents=True)
-    (run_dir / "answer.txt").write_text("hi")
-    db.create_run(rid, pid, "q", "mock", "mock", str(run_dir))
+    rid = "batch123abc"
+    batch_dir = db.artifacts_root() / rid
+    (batch_dir / "trajectories" / "0").mkdir(parents=True)
+    (batch_dir / "consensus.txt").write_text("hi")
+    db.create_batch(rid, pid, "q", "mock", "mock", 1, str(batch_dir))
     resp = c.get(f"/api/runs/{rid}/download")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/zip"

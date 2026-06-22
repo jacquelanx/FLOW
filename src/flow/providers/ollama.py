@@ -28,10 +28,12 @@ class OllamaProvider(Provider):
         model: str = "qwen2.5-coder",
         base_url: str | None = None,
         timeout: float = 180.0,
+        temperature: float = 0.0,
     ):
         self.model = model
         self.base_url = (base_url or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
         self.timeout = timeout
+        self.temperature = temperature
 
     def generate(self, messages: list[Message], tools: list[Tool]) -> ToolCall:
         payload = {
@@ -39,7 +41,7 @@ class OllamaProvider(Provider):
             "messages": [m.to_openai() for m in messages],
             "tools": [t.to_openai() for t in tools],
             "stream": False,
-            "options": {"temperature": 0.0},
+            "options": {"temperature": self.temperature},
         }
         try:
             r = httpx.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout)
@@ -68,3 +70,19 @@ class OllamaProvider(Provider):
             except json.JSONDecodeError:
                 args = {}
         return ToolCall(name=fn.get("name", ""), arguments=args or {})
+
+    def complete(self, messages: list[Message]) -> str:
+        """Free-text chat completion (no tools) — used by the consensus synthesis."""
+        payload = {
+            "model": self.model,
+            "messages": [m.to_openai() for m in messages],
+            "stream": False,
+            "options": {"temperature": self.temperature},
+        }
+        try:
+            r = httpx.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout)
+        except httpx.HTTPError as e:  # pragma: no cover - network dependent
+            raise ProviderError(f"Could not reach Ollama at {self.base_url}: {e}") from e
+        if r.status_code != 200:
+            raise ProviderError(f"Ollama returned HTTP {r.status_code}: {r.text[:500]}")
+        return (r.json().get("message", {}) or {}).get("content") or ""

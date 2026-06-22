@@ -1,12 +1,15 @@
-"""SQLite persistence for projects and runs (stdlib only).
+"""SQLite persistence for projects, consensus batches, and trajectories (stdlib only).
 
-Stores project/run *metadata* so the UI's RunHistory survives refresh/restart. Uploaded
-files and run artifacts live on the filesystem (paths from env); this DB only indexes
-them. No analysis logic is stored here.
+A **batch** is one consensus run: N independent trajectories analyzing the same data, plus
+a meta-analysis that synthesizes their conclusions. Each **trajectory** is a single agent
+run with fully isolated state (its own artifact dir + Docker container).
+
+Only metadata is stored here so the UI's history survives restart; notebooks, logs, plots,
+and the consensus text live on the filesystem (paths from env). No analysis logic is stored.
 
 Storage roots (env-overridable):
   FLOW_DATA_ROOT       — project uploads        (default: ./var/projects)
-  FLOW_ARTIFACTS_ROOT  — run artifact dirs       (default: ./var/runs)
+  FLOW_ARTIFACTS_ROOT  — batch artifact dirs     (default: ./var/runs)
   FLOW_DB_PATH         — sqlite file             (default: ./var/flow.sqlite3)
 """
 
@@ -52,19 +55,34 @@ def init_db() -> None:
                 created_at  REAL NOT NULL,
                 path        TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS runs (
+            CREATE TABLE IF NOT EXISTS batches (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL,
+                question        TEXT NOT NULL,
+                provider        TEXT NOT NULL,
+                model           TEXT NOT NULL,
+                n_trajectories  INTEGER NOT NULL,
+                status          TEXT NOT NULL,
+                created_at      REAL NOT NULL,
+                finished_at     REAL,
+                consensus_ok    INTEGER DEFAULT 0,
+                n_submitted     INTEGER DEFAULT 0,
+                failure_reason  TEXT,
+                artifact_dir    TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            );
+            CREATE TABLE IF NOT EXISTS trajectories (
                 id             TEXT PRIMARY KEY,
-                project_id     TEXT NOT NULL,
-                question       TEXT NOT NULL,
-                provider       TEXT NOT NULL,
-                model          TEXT NOT NULL,
+                batch_id       TEXT NOT NULL,
+                idx            INTEGER NOT NULL,
                 status         TEXT NOT NULL,
-                created_at     REAL NOT NULL,
-                finished_at    REAL,
                 submitted      INTEGER DEFAULT 0,
                 failure_reason TEXT,
+                steps          INTEGER DEFAULT 0,
                 artifact_dir   TEXT NOT NULL,
-                FOREIGN KEY (project_id) REFERENCES projects(id)
+                created_at     REAL NOT NULL,
+                finished_at    REAL,
+                FOREIGN KEY (batch_id) REFERENCES batches(id)
             );
             """
         )
@@ -84,63 +102,99 @@ def create_project(project_id: str, name: str) -> dict[str, Any]:
 
 def get_project(project_id: str) -> Optional[dict[str, Any]]:
     with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM projects WHERE id = ?", (project_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     return dict(row) if row else None
 
 
 def list_projects() -> list[dict[str, Any]]:
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM projects ORDER BY created_at DESC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
     return [dict(r) for r in rows]
 
 
-# ----------------------------------------------------------------- runs
-def create_run(
-    run_id: str,
+# ----------------------------------------------------------------- batches
+def create_batch(
+    batch_id: str,
     project_id: str,
     question: str,
     provider: str,
     model: str,
+    n_trajectories: int,
     artifact_dir: str,
 ) -> dict[str, Any]:
     with _connect() as conn:
         conn.execute(
-            """INSERT INTO runs
-               (id, project_id, question, provider, model, status, created_at, artifact_dir)
-               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)""",
-            (run_id, project_id, question, provider, model, time.time(), artifact_dir),
+            """INSERT INTO batches
+               (id, project_id, question, provider, model, n_trajectories, status,
+                created_at, artifact_dir)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+            (batch_id, project_id, question, provider, model, n_trajectories,
+             time.time(), artifact_dir),
         )
-    return get_run(run_id)
+    return get_batch(batch_id)
 
 
-def update_run(run_id: str, **fields: Any) -> None:
+def update_batch(batch_id: str, **fields: Any) -> None:
     if not fields:
         return
     cols = ", ".join(f"{k} = ?" for k in fields)
-    vals = list(fields.values()) + [run_id]
     with _connect() as conn:
-        conn.execute(f"UPDATE runs SET {cols} WHERE id = ?", vals)
+        conn.execute(f"UPDATE batches SET {cols} WHERE id = ?", [*fields.values(), batch_id])
 
 
-def get_run(run_id: str) -> Optional[dict[str, Any]]:
+def get_batch(batch_id: str) -> Optional[dict[str, Any]]:
     with _connect() as conn:
-        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
     return dict(row) if row else None
 
 
-def list_runs(project_id: Optional[str] = None) -> list[dict[str, Any]]:
+def list_batches(project_id: Optional[str] = None) -> list[dict[str, Any]]:
     with _connect() as conn:
         if project_id:
             rows = conn.execute(
-                "SELECT * FROM runs WHERE project_id = ? ORDER BY created_at DESC",
+                "SELECT * FROM batches WHERE project_id = ? ORDER BY created_at DESC",
                 (project_id,),
             ).fetchall()
         else:
-            rows = conn.execute(
-                "SELECT * FROM runs ORDER BY created_at DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM batches ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+# ----------------------------------------------------------------- trajectories
+def create_trajectory(
+    traj_id: str, batch_id: str, idx: int, artifact_dir: str
+) -> dict[str, Any]:
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO trajectories
+               (id, batch_id, idx, status, artifact_dir, created_at)
+               VALUES (?, ?, ?, 'pending', ?, ?)""",
+            (traj_id, batch_id, idx, artifact_dir, time.time()),
+        )
+    return get_trajectory(traj_id)
+
+
+def update_trajectory(traj_id: str, **fields: Any) -> None:
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE trajectories SET {cols} WHERE id = ?", [*fields.values(), traj_id]
+        )
+
+
+def get_trajectory(traj_id: str) -> Optional[dict[str, Any]]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM trajectories WHERE id = ?", (traj_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_trajectories(batch_id: str) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trajectories WHERE batch_id = ? ORDER BY idx ASC", (batch_id,)
+        ).fetchall()
     return [dict(r) for r in rows]

@@ -1,17 +1,26 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Artifact } from "../types";
+import type { Artifact, TrajectorySummary } from "../types";
+import TrajectoryPicker from "./TrajectoryPicker";
 
-// Lists every artifact with a type-aware preview (notebook/json/csv/image/text) and
-// one-click download of the whole run as a zip.
+// Lists every artifact a chosen trajectory produced, with a type-aware preview
+// (notebook/json/csv/image/text), plus one-click download of the whole consensus run.
 export default function ArtifactBrowser({ runId }: { runId: string }) {
+  const [trajectories, setTrajectories] = useState<TrajectorySummary[]>([]);
+  const [idx, setIdx] = useState(0);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selected, setSelected] = useState<Artifact | null>(null);
   const [preview, setPreview] = useState<string>("");
 
   useEffect(() => {
-    api.listArtifacts(runId).then(setArtifacts).catch(() => setArtifacts([]));
+    api.getTrajectories(runId).then(setTrajectories).catch(() => setTrajectories([]));
   }, [runId]);
+
+  useEffect(() => {
+    setSelected(null);
+    setPreview("");
+    api.listArtifacts(runId, idx).then(setArtifacts).catch(() => setArtifacts([]));
+  }, [runId, idx]);
 
   async function open(a: Artifact) {
     setSelected(a);
@@ -19,7 +28,7 @@ export default function ArtifactBrowser({ runId }: { runId: string }) {
       setPreview("");
       return;
     }
-    const res = await fetch(api.artifactUrl(runId, a.path));
+    const res = await fetch(api.artifactUrl(runId, idx, a.path));
     let text = await res.text();
     if (a.kind === "json" || a.kind === "notebook") {
       try {
@@ -36,9 +45,13 @@ export default function ArtifactBrowser({ runId }: { runId: string }) {
       <header className="page-head">
         <h2>Artifacts</h2>
         <p className="subtitle">
-          Every file this run produced. Select one to preview, or download the whole run.
+          Every file a chosen trajectory produced. Select one to preview, or download the whole
+          consensus run.
         </p>
       </header>
+
+      <TrajectoryPicker trajectories={trajectories} idx={idx} onChange={setIdx} />
+
       <div className="card">
         <a href={api.downloadUrl(runId)}>
           <button>Download run (.zip)</button>
@@ -82,7 +95,7 @@ export default function ArtifactBrowser({ runId }: { runId: string }) {
             <img
               className="plot"
               style={{ width: "100%" }}
-              src={api.artifactUrl(runId, selected.path)}
+              src={api.artifactUrl(runId, idx, selected.path)}
               alt={selected.name}
             />
           )}

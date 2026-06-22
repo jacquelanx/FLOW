@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { StepRecord } from "../types";
+import type { BatchStatus, StepRecord, TrajectorySummary } from "../types";
 
-// Page 4: stream the agent's steps live — each edit_cell's code and the cell's output,
-// so a lab member can watch the agent reason. Polls only the run passed in (the active
-// run from this session), never a stale selection.
+// Page: watch all N trajectories of a consensus run progress live. A grid shows each
+// trajectory's status + step count; selecting one streams its code/output below. When the
+// trajectories finish, a meta-analysis synthesizes the consensus and "View results" opens.
 export default function LiveTrajectory({
   runId,
   onViewResults,
@@ -12,30 +12,27 @@ export default function LiveTrajectory({
   runId: string;
   onViewResults: () => void;
 }) {
+  const [batch, setBatch] = useState<BatchStatus | null>(null);
+  const [selected, setSelected] = useState(0);
   const [steps, setSteps] = useState<StepRecord[]>([]);
-  const [status, setStatus] = useState<string>("pending");
-  const [executing, setExecuting] = useState<boolean>(false);
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
+    setBatch(null);
+    setSelected(0);
     setSteps([]);
-    setStatus("pending");
 
     async function poll() {
       try {
-        const s = await api.getSteps(runId);
-        setSteps(s.steps);
-        const run = await api.getRun(runId);
-        setStatus(run.status);
-        setExecuting(Boolean((run.live as any)?.executing_in_docker));
-        if (["completed", "failed", "error"].includes(run.status)) {
-          if (timer.current) window.clearInterval(timer.current);
+        const b = await api.getRun(runId);
+        setBatch(b);
+        if (["completed", "failed", "error"].includes(b.status) && timer.current) {
+          window.clearInterval(timer.current);
         }
       } catch {
         /* keep polling */
       }
     }
-
     poll();
     timer.current = window.setInterval(poll, 1500);
     return () => {
@@ -43,64 +40,112 @@ export default function LiveTrajectory({
     };
   }, [runId]);
 
-  const terminal = ["completed", "failed", "error"].includes(status);
+  // Stream the selected trajectory's steps.
+  useEffect(() => {
+    let active = true;
+    async function pollSteps() {
+      try {
+        const s = await api.getSteps(runId, selected);
+        if (active) setSteps(s.steps);
+      } catch {
+        /* ignore */
+      }
+    }
+    pollSteps();
+    const t = window.setInterval(pollSteps, 1500);
+    return () => {
+      active = false;
+      window.clearInterval(t);
+    };
+  }, [runId, selected]);
+
+  const terminal = batch && ["completed", "failed", "error"].includes(batch.status);
+  const synthesizing = batch?.phase === "synthesizing";
 
   return (
     <div className="page">
       <header className="page-head">
-        <h2>Live trajectory</h2>
+        <h2>Live trajectories</h2>
         <p className="subtitle">
-          Watch the agent reason in real time — each cell of code it writes and the output it
-          gets back.
+          {batch ? batch.run.n_trajectories : "—"} independent agents analyzing the data.
+          Watch each one reason, then a consensus is synthesized from all of them.
         </p>
       </header>
+
       <div className="card">
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <StatusBadge status={status} />
-          {executing && (
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <BatchStatusBadge status={batch?.status} />
+          {synthesizing && (
             <span className="muted">
-              <span className="spinner" /> executing in Docker…
+              <span className="spinner" /> synthesizing consensus…
             </span>
           )}
-          <span className="muted">run {runId}</span>
           {terminal && (
-            <button style={{ marginLeft: "auto" }} onClick={onViewResults}>
+            <button className="primary" style={{ marginLeft: "auto" }} onClick={onViewResults}>
               View results →
             </button>
           )}
         </div>
       </div>
 
-      {steps.length === 0 && !terminal && (
-        <p className="muted">
-          <span className="spinner" /> Waiting for the agent's first step…
-        </p>
+      {batch && (
+        <div className="card">
+          <div className="card-title">Trajectories</div>
+          <div className="traj-grid">
+            {batch.trajectories.map((t) => (
+              <button
+                key={t.idx}
+                className={`traj-chip ${selected === t.idx ? "active" : ""}`}
+                onClick={() => setSelected(t.idx)}
+              >
+                <span className="traj-idx">#{t.idx}</span>
+                <TrajBadge t={t} />
+                <span className="traj-steps">{t.steps} steps</span>
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
-      {steps.map((s) => (
-        <div className="step" key={s.step}>
-          <div className="step-head">
-            <span className="badge run">step {s.step}</span>
-            <span>{s.tool}</span>
+      <div className="card">
+        <div className="card-title">Trajectory #{selected}</div>
+        {steps.length === 0 ? (
+          <div className="empty">
+            {terminal ? "No steps recorded." : "Waiting for this trajectory to start…"}
           </div>
-          {s.tool === "edit_cell" && (
-            <pre>{String((s.arguments as any).source ?? "")}</pre>
-          )}
-          {s.tool === "submit_answer" && (
-            <pre>{String((s.arguments as any).answer ?? "")}</pre>
-          )}
-          <div className="step-head" style={{ background: "transparent" }}>
-            observation
-          </div>
-          <pre>{s.observation}</pre>
-        </div>
-      ))}
+        ) : (
+          steps.map((s) => (
+            <div className="step" key={s.step}>
+              <div className="step-head">
+                <span className="badge run">step {s.step}</span>
+                <span>{s.tool}</span>
+              </div>
+              {s.tool === "edit_cell" && <pre>{String((s.arguments as any).source ?? "")}</pre>}
+              {s.tool === "submit_answer" && (
+                <pre>{String((s.arguments as any).answer ?? "")}</pre>
+              )}
+              <div className="step-head" style={{ background: "transparent" }}>
+                observation
+              </div>
+              <pre>{s.observation}</pre>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function BatchStatusBadge({ status }: { status?: string }) {
+  if (!status) return <span className="badge run">loading</span>;
   const cls =
-    status === "completed" ? "ok" : status === "running" || status === "pending" ? "run" : "err";
+    status === "completed" ? "ok" : ["pending", "running", "synthesizing"].includes(status) ? "run" : "err";
   return <span className={`badge ${cls}`}>{status}</span>;
+}
+
+function TrajBadge({ t }: { t: TrajectorySummary }) {
+  if (t.status === "completed" || t.submitted) return <span className="badge ok">done</span>;
+  if (t.status === "running") return <span className="badge run">running</span>;
+  if (t.status === "pending") return <span className="badge run">pending</span>;
+  return <span className="badge err">{t.status}</span>;
 }

@@ -22,6 +22,9 @@ export default function ConfigEditor({
   const [description, setDescription] = useState("");
   const [provider, setProvider] = useState("mock");
   const [model, setModel] = useState("mock");
+  const [diffMeta, setDiffMeta] = useState(false);
+  const [metaProvider, setMetaProvider] = useState("mock");
+  const [metaModel, setMetaModel] = useState("mock");
   const [maxSteps, setMaxSteps] = useState(30);
   const [allowNetwork, setAllowNetwork] = useState(false);
   const [allowRaw, setAllowRaw] = useState(false);
@@ -41,8 +44,19 @@ export default function ConfigEditor({
       const c = cfg.config;
       setQuestion(c.question || "");
       setDescription(c.dataset?.description || "");
-      setProvider(c.runtime?.provider || "mock");
-      setModel(c.runtime?.model || pi.default_models[c.runtime?.provider] || "mock");
+      const p = c.runtime?.provider || "mock";
+      setProvider(p);
+      setModel(c.runtime?.model || pi.default_models[p] || "mock");
+      const mp = c.runtime?.meta_provider || "";
+      const mm = c.runtime?.meta_model || "";
+      if (mp || mm) {
+        setDiffMeta(true);
+        setMetaProvider(mp || p);
+        setMetaModel(mm || pi.default_models[mp] || "");
+      } else {
+        setMetaProvider(p);
+        setMetaModel(c.runtime?.model || pi.default_models[p] || "mock");
+      }
       setMaxSteps(c.runtime?.max_steps ?? 30);
       setPerCell(c.runtime?.per_cell_timeout ?? 120);
       setPerTraj(c.runtime?.per_trajectory_timeout ?? 1800);
@@ -68,6 +82,8 @@ export default function ConfigEditor({
       description,
       provider,
       model,
+      meta_provider: diffMeta ? metaProvider : "",
+      meta_model: diffMeta ? metaModel : "",
       max_steps: maxSteps,
       per_cell_timeout: perCell,
       per_trajectory_timeout: perTraj,
@@ -137,6 +153,48 @@ export default function ConfigEditor({
           Pick a model from the list, or choose “Custom…” to enter any id the provider serves.
           <code>mock</code> runs the loop offline with no real analysis.
         </p>
+
+        <label className="toggle" style={{ fontWeight: 600, marginTop: 18 }}>
+          <input
+            type="checkbox"
+            checked={diffMeta}
+            onChange={(e) => setDiffMeta(e.target.checked)}
+          />
+          <span>
+            Use a different model for the consensus
+            <span className="hint"> — synthesize the final answer with a separate model.</span>
+          </span>
+        </label>
+        {diffMeta && (
+          <div className="grid-2" style={{ marginTop: 12 }}>
+            <div>
+              <label htmlFor="mprov">Consensus provider</label>
+              <select
+                id="mprov"
+                value={metaProvider}
+                onChange={(e) => {
+                  setMetaProvider(e.target.value);
+                  setMetaModel(info?.default_models[e.target.value] ?? "");
+                }}
+              >
+                {(info?.ui_providers ?? ["mock"]).map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="mmodel">Consensus model</label>
+              <ModelPicker
+                id="mmodel"
+                models={info?.catalog[metaProvider] ?? [metaModel]}
+                value={metaModel}
+                onChange={setMetaModel}
+              />
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="card">

@@ -623,6 +623,43 @@ img.plot {
   background: #fff;
 }
 
+/* ---------------------------------------------------------------- trajectory grid */
+.traj-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.traj-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  cursor: pointer;
+  font-weight: 400;
+}
+.traj-chip:hover:not(:disabled) {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+.traj-chip.active {
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+.traj-idx {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.traj-steps {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 /* ---------------------------------------------------------------- misc */
 .muted {
   color: var(--muted);

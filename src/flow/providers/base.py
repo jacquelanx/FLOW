@@ -22,3 +22,14 @@ class Provider(abc.ABC):
         text instead of a tool call, wrap it so the agent loop can recover (e.g. by
         nudging the model), but never fabricate analysis here.
         """
+
+    def complete(self, messages: list[Message]) -> str:
+        """Return a free-text completion (no tools).
+
+        Used by the consensus meta-analysis to synthesize trajectory conclusions. This is
+        text synthesis, not data analysis — it executes no code and touches no dataset.
+        Providers that cannot do plain completions may leave this unimplemented.
+        """
+        raise NotImplementedError(
+            f"{self.name} does not support free-text completion."
+        )

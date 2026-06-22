@@ -22,18 +22,38 @@ export interface Profile {
   files: FileReport[];
 }
 
-export interface Run {
+// A "run" in the UI is a consensus batch: N independent trajectories + a meta-analysis.
+export interface Batch {
   id: string;
   project_id: string;
   question: string;
   provider: string;
   model: string;
+  n_trajectories: number;
   status: string;
   created_at: number;
   finished_at: number | null;
-  submitted: number;
+  consensus_ok: number;
+  n_submitted: number;
   failure_reason: string | null;
   artifact_dir: string;
+}
+
+export interface TrajectorySummary {
+  idx: number;
+  status: string;
+  steps: number;
+  submitted: boolean;
+  failure_reason: string | null;
+  answer: string;
+}
+
+export interface Consensus {
+  consensus: string | null;
+  synthesized: boolean | null;
+  n_submitted: number | null;
+  n_total: number | null;
+  failure_reason: string | null;
 }
 
 export interface StepRecord {
@@ -45,12 +65,12 @@ export interface StepRecord {
   reward?: number;
 }
 
-export interface RunStatus {
-  run: Run;
-  live: Record<string, unknown>;
+export interface BatchStatus {
+  run: Batch;
   status: string;
-  answer: string;
-  run_meta: Record<string, unknown>;
+  phase: string | null;
+  trajectories: TrajectorySummary[];
+  consensus: Consensus;
 }
 
 export interface Artifact {
@@ -70,6 +90,8 @@ export interface ProvidersInfo {
 export interface RuntimeCfg {
   provider: string;
   model: string;
+  meta_provider: string;
+  meta_model: string;
   max_steps: number;
   per_cell_timeout: number;
   per_trajectory_timeout: number;

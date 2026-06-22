@@ -8,7 +8,9 @@ Creates ``examples/demo/`` with the exact file shapes lab members upload:
 The data is random noise with generic detector names. We deliberately encode NO analysis
 logic and NO specific real panel — metadata.json states only neutral FACTS (which detector
 carries which synthetic stain, a couple of dates) so the agent has something to interpret.
-The agent must still derive the entire analysis itself.
+The agent must still derive the entire analysis itself. 
+
+Encoded underlying structure is a 30% population with elevated DET-D and DET-E signal.
 
 Usage:
     python scripts/generate_synthetic_demo.py [--out examples/demo] [--events 4000] [--seed 7]

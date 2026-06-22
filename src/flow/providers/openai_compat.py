@@ -66,20 +66,19 @@ class OpenAICompatibleProvider(Provider):
                 f"Missing API key: set the {api_key_env} environment variable on the host."
             )
 
-    def generate(self, messages: list[Message], tools: list[Tool]) -> ToolCall:
-        payload = {
-            "model": self.model,
-            "messages": [m.to_openai() for m in messages],
-            "tools": [t.to_openai() for t in tools],
-            "tool_choice": "required",
-            "temperature": self.temperature,
-        }
+    def _post(self, payload: dict) -> "httpx.Response":
+        """POST to chat/completions with transient-error retry + backoff.
+
+        Returns the final response (the caller inspects its status). Retries 429/503/5xx
+        and network blips with honored Retry-After; never retries a hard 'limit: 0' quota
+        refusal. Raises ProviderError only on exhausted network failures.
+        """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-
         last_err = ""
+        r = None
         for attempt in range(self.max_retries + 1):
             try:
                 r = httpx.post(
@@ -96,32 +95,58 @@ class OpenAICompatibleProvider(Provider):
                 raise ProviderError(last_err) from e
 
             if r.status_code == 200:
-                return self._parse(r.json())
-
+                return r
             body = r.text[:500]
-
-            # Some providers reject tool_choice="required"; retry once with "auto".
-            if r.status_code in (400, 422) and payload.get("tool_choice") == "required":
-                payload["tool_choice"] = "auto"
-                continue
-
-            # Retry transient overload/rate errors — but NOT a hard "limit: 0" quota
-            # refusal, which will never succeed on retry. For 429/503 we honor the
-            # server's Retry-After (e.g. Gemini's per-minute rate window) so a multi-step
-            # run rides out throttling instead of failing the whole trajectory.
             hard_quota = r.status_code == 429 and "limit: 0" in body
-            if r.status_code in _TRANSIENT_STATUSES and not hard_quota and attempt < self.max_retries:
+            if (
+                r.status_code in _TRANSIENT_STATUSES
+                and not hard_quota
+                and attempt < self.max_retries
+            ):
                 time.sleep(self._backoff_delay(attempt, r))
                 last_err = f"{self.name} returned HTTP {r.status_code}: {body}"
                 continue
+            return r  # non-transient, or retries exhausted — caller handles status
+        return r  # pragma: no cover - loop always returns
 
-            kind = "rate limit / overload" if r.status_code in (429, 503) else "error"
-            raise ProviderError(
-                f"{self.name} returned HTTP {r.status_code} ({kind}) after "
-                f"{attempt + 1} attempt(s): {body}"
-            )
+    @staticmethod
+    def _http_error(name: str, r: "httpx.Response") -> ProviderError:
+        body = r.text[:500]
+        kind = "rate limit / overload" if r.status_code in (429, 503) else "error"
+        return ProviderError(f"{name} returned HTTP {r.status_code} ({kind}): {body}")
 
-        raise ProviderError(last_err or f"{self.name}: exhausted retries")
+    def generate(self, messages: list[Message], tools: list[Tool]) -> ToolCall:
+        payload = {
+            "model": self.model,
+            "messages": [m.to_openai() for m in messages],
+            "tools": [t.to_openai() for t in tools],
+            "tool_choice": "required",
+            "temperature": self.temperature,
+        }
+        r = self._post(payload)
+        # Some providers reject tool_choice="required"; retry once with "auto".
+        if r.status_code in (400, 422) and payload.get("tool_choice") == "required":
+            payload["tool_choice"] = "auto"
+            r = self._post(payload)
+        if r.status_code != 200:
+            raise self._http_error(self.name, r)
+        return self._parse(r.json())
+
+    def complete(self, messages: list[Message]) -> str:
+        """Free-text chat completion (no tools) — used by the consensus synthesis."""
+        payload = {
+            "model": self.model,
+            "messages": [m.to_openai() for m in messages],
+            "temperature": self.temperature,
+        }
+        r = self._post(payload)
+        if r.status_code != 200:
+            raise self._http_error(self.name, r)
+        data = r.json()
+        try:
+            return data["choices"][0]["message"].get("content") or ""
+        except (KeyError, IndexError) as e:
+            raise ProviderError(f"Malformed response from {self.name}: {data}") from e
 
     def _backoff_delay(self, attempt: int, response: object | None) -> float:
         """Seconds to wait before the next attempt.

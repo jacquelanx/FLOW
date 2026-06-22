@@ -29,6 +29,11 @@ class RuntimeConfig(BaseModel):
     max_steps: int = 30
     per_cell_timeout: float = 120.0
     per_trajectory_timeout: float = 1800.0
+    # Consensus meta-analysis model. Blank = use the same provider/model as the
+    # trajectories. Set these to synthesize the consensus with a different (e.g. stronger)
+    # model than the one that ran the trajectories. This is a runtime choice, not analysis.
+    meta_provider: str = ""
+    meta_model: str = ""
 
 
 class SafetyConfig(BaseModel):
@@ -138,6 +143,8 @@ runtime:
   max_steps: 30
   per_cell_timeout: 120
   per_trajectory_timeout: 1800
+  meta_provider: ""        # consensus synthesis provider (blank = same as provider above)
+  meta_model: ""           # consensus synthesis model (blank = same as model above)
 
 safety:
   memory: "4g"

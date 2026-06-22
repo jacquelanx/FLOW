@@ -73,8 +73,11 @@ def default_model(provider: str) -> str:
     return models[0] if models else ""
 
 
-def build_provider(provider: str, model: str) -> Provider:
+def build_provider(provider: str, model: str, temperature: float = 0.0) -> Provider:
     """Construct a Provider instance for ``provider``/``model``.
+
+    ``temperature`` lets multi-trajectory runs diversify (the consensus pipeline samples
+    several independent trajectories at a higher temperature, then synthesizes them).
 
     Raises ValueError for unknown providers and ProviderError for missing keys.
     """
@@ -86,7 +89,7 @@ def build_provider(provider: str, model: str) -> Provider:
     if key == "ollama":
         from flow.providers.ollama import OllamaProvider
 
-        return OllamaProvider(model=model or "qwen2.5-coder")
+        return OllamaProvider(model=model or "qwen2.5-coder", temperature=temperature)
     if key in _OPENAI_COMPAT:
         from flow.providers.openai_compat import OpenAICompatibleProvider
 
@@ -97,6 +100,7 @@ def build_provider(provider: str, model: str) -> Provider:
             base_url=base_url,
             api_key_env=cfg["api_key_env"],
             name=key,
+            temperature=temperature,
         )
     raise ValueError(
         f"Unknown provider '{provider}'. Supported: {', '.join(SUPPORTED_PROVIDERS)}"

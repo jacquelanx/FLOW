@@ -20,6 +20,11 @@ export default function RunLauncher({
   const [provider, setProvider] = useState("mock");
   const [model, setModel] = useState("mock");
   const [maxSteps, setMaxSteps] = useState(30);
+  const [nTrajectories, setNTrajectories] = useState(8);
+  // Consensus (meta-analysis) model — defaults to the same model as the trajectories.
+  const [diffMeta, setDiffMeta] = useState(false);
+  const [metaProvider, setMetaProvider] = useState("mock");
+  const [metaModel, setMetaModel] = useState("mock");
   const [starting, setStarting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -32,6 +37,16 @@ export default function RunLauncher({
       setProvider(p);
       setModel(c.runtime?.model || pi.default_models[p] || "mock");
       setMaxSteps(c.runtime?.max_steps ?? 30);
+      const mp = c.runtime?.meta_provider || "";
+      const mm = c.runtime?.meta_model || "";
+      if (mp || mm) {
+        setDiffMeta(true);
+        setMetaProvider(mp || p);
+        setMetaModel(mm || pi.default_models[mp] || "");
+      } else {
+        setMetaProvider(p);
+        setMetaModel(c.runtime?.model || pi.default_models[p] || "mock");
+      }
     });
   }, [projectId]);
 
@@ -51,7 +66,11 @@ export default function RunLauncher({
         question,
         provider,
         model,
+        // Blank meta fields => backend uses the same model as the trajectories.
+        meta_provider: diffMeta ? metaProvider : "",
+        meta_model: diffMeta ? metaModel : "",
         max_steps: maxSteps,
+        n_trajectories: nTrajectories,
       });
       onRunStarted(r.run_id);
     } catch (e) {
@@ -120,7 +139,75 @@ export default function RunLauncher({
             </div>
           </div>
 
-          <p className="hint" style={{ marginTop: 16 }}>
+          <div className="field" style={{ marginTop: 16 }}>
+            <label htmlFor="ntraj">Trajectories</label>
+            <input
+              id="ntraj"
+              type="number"
+              min={1}
+              max={16}
+              value={nTrajectories}
+              onChange={(e) =>
+                setNTrajectories(
+                  Math.max(1, Math.min(16, parseInt(e.target.value || "1", 10))),
+                )
+              }
+            />
+            <p className="hint">
+              Number of independent agents that will each analyze the data separately. Their
+              conclusions are then synthesized into one consensus (the paper uses 8). More
+              trajectories give a more robust consensus but take longer — they run one at a
+              time to keep each one’s state fully isolated.
+            </p>
+          </div>
+
+          <div className="field">
+            <label className="toggle" style={{ fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={diffMeta}
+                onChange={(e) => setDiffMeta(e.target.checked)}
+              />
+              <span>
+                Use a different model for the consensus
+                <span className="hint">
+                  {" "}— synthesize the final answer with a separate (e.g. stronger) model.
+                </span>
+              </span>
+            </label>
+            {diffMeta && (
+              <div className="grid-2" style={{ marginTop: 12 }}>
+                <div>
+                  <label htmlFor="mprov">Consensus provider</label>
+                  <select
+                    id="mprov"
+                    value={metaProvider}
+                    onChange={(e) => {
+                      setMetaProvider(e.target.value);
+                      setMetaModel(info?.default_models[e.target.value] ?? "");
+                    }}
+                  >
+                    {(info?.ui_providers ?? ["mock"]).map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="mmodel">Consensus model</label>
+                  <ModelPicker
+                    id="mmodel"
+                    models={info?.catalog[metaProvider] ?? [metaModel]}
+                    value={metaModel}
+                    onChange={setMetaModel}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <p className="hint" style={{ marginTop: 12 }}>
             <code>mock</code> runs the loop offline with no real analysis. Hosted models
             (gemini / groq / …) need their API key set on the server; <code>ollama</code> runs
             locally.
@@ -154,16 +241,26 @@ export default function RunLauncher({
                   {provider} / {model || "—"}
                 </div>
               </li>
+              <li>
+                <div className="name">Trajectories</div>
+                <div className="desc">{nTrajectories} independent → 1 consensus</div>
+              </li>
+              <li>
+                <div className="name">Consensus model</div>
+                <div className="desc">
+                  {diffMeta ? `${metaProvider} / ${metaModel || "—"}` : "same as trajectories"}
+                </div>
+              </li>
             </ul>
           </section>
 
           <section className="card">
             <div className="card-title">What happens</div>
             <ol className="steps-list">
-              <li>A sandboxed container starts with your data mounted read-only.</li>
-              <li>The agent writes and runs code, step by step.</li>
-              <li>You watch each step live on the next page.</li>
-              <li>It submits a conclusion; artifacts are saved.</li>
+              <li>{nTrajectories} agents each analyze the data in their own sandbox.</li>
+              <li>Each writes and runs its own code, step by step.</li>
+              <li>You watch every trajectory live on the next page.</li>
+              <li>A meta-analysis synthesizes them into one consensus conclusion.</li>
             </ol>
           </section>
         </aside>

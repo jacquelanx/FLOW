@@ -51,7 +51,7 @@ from flow.config import (
 )
 from flow.env.docker_runtime import DEFAULT_IMAGE, doctor
 from flow.providers.registry import MODEL_CATALOG, SUPPORTED_PROVIDERS, UI_PROVIDERS, default_model
-from flow.runner import run_analysis
+from flow.runner import run_batch
 from flow.trajectory import Trajectory
 from flow.validation import MAX_UPLOAD_BYTES, UnsafePathError, profile_project, safe_filename
 
@@ -70,6 +70,14 @@ def _get_status(run_id: str) -> dict[str, Any]:
         return dict(_RUN_STATUS.get(run_id, {}))
 
 
+def _set_traj_status(batch_id: str, idx: int, **fields: Any) -> None:
+    """Update the live status of one trajectory within a batch (thread-safe)."""
+    with _STATUS_LOCK:
+        batch = _RUN_STATUS.setdefault(batch_id, {})
+        trajs = batch.setdefault("trajectories", {})
+        trajs.setdefault(str(idx), {}).update(fields)
+
+
 # ----------------------------------------------------------------- request models
 class CreateProjectBody(BaseModel):
     name: str
@@ -86,6 +94,8 @@ class ConfigFormBody(BaseModel):
     description: str = ""
     provider: str = "mock"
     model: str = "mock"
+    meta_provider: str = ""
+    meta_model: str = ""
     max_steps: int = 30
     per_cell_timeout: float = 120.0
     per_trajectory_timeout: float = 1800.0
@@ -101,7 +111,12 @@ class StartRunBody(BaseModel):
     question: Optional[str] = None
     provider: str = "mock"
     model: str = "mock"
+    # Consensus synthesis model (blank = same as provider/model above).
+    meta_provider: str = ""
+    meta_model: str = ""
     max_steps: Optional[int] = None
+    # Number of independent trajectories to run before the consensus meta-analysis.
+    n_trajectories: int = 8
 
 
 def create_app() -> FastAPI:
@@ -238,6 +253,8 @@ def create_app() -> FastAPI:
                 runtime=RuntimeConfig(
                     provider=body.provider,
                     model=body.model,
+                    meta_provider=body.meta_provider,
+                    meta_model=body.meta_model,
                     max_steps=body.max_steps,
                     per_cell_timeout=body.per_cell_timeout,
                     per_trajectory_timeout=body.per_trajectory_timeout,
@@ -257,7 +274,8 @@ def create_app() -> FastAPI:
         cfg_path.write_text(yaml_text)
         return {"ok": True, "content": yaml_text}
 
-    # ------------------------------------------------------------- runs
+    # ------------------------------------------------------------- runs (consensus batches)
+    # A "run" in the UI is a consensus batch: N independent trajectories + a meta-analysis.
     @app.post("/api/runs")
     def start_run(body: StartRunBody) -> dict[str, Any]:
         proj = _project_or_404(body.project_id)
@@ -271,12 +289,9 @@ def create_app() -> FastAPI:
             except ConfigError as e:
                 raise HTTPException(status_code=400, detail=str(e))
         else:
-            from flow.config import FlowConfig
-
             if not body.question:
                 raise HTTPException(
-                    status_code=400,
-                    detail="No config.yaml and no question provided.",
+                    status_code=400, detail="No config.yaml and no question provided."
                 )
             cfg = FlowConfig(question=body.question)
 
@@ -284,95 +299,175 @@ def create_app() -> FastAPI:
             cfg.question = body.question
         cfg.runtime.provider = body.provider
         cfg.runtime.model = body.model
+        cfg.runtime.meta_provider = body.meta_provider
+        cfg.runtime.meta_model = body.meta_model
         if body.max_steps:
             cfg.runtime.max_steps = body.max_steps
 
-        run_id = uuid.uuid4().hex[:12]
-        run_dir = db.artifacts_root() / run_id
-        db.create_run(
-            run_id, body.project_id, cfg.question, cfg.runtime.provider,
-            cfg.runtime.model, str(run_dir),
+        n = max(1, min(int(body.n_trajectories or 1), 16))
+        batch_id = uuid.uuid4().hex[:12]
+        batch_dir = db.artifacts_root() / batch_id
+        db.create_batch(
+            batch_id, body.project_id, cfg.question, cfg.runtime.provider,
+            cfg.runtime.model, n, str(batch_dir),
         )
-        _set_status(run_id, status="pending", steps=0, started_at=time.time())
+        for idx in range(n):
+            db.create_trajectory(
+                f"{batch_id}-{idx}", batch_id, idx,
+                str(batch_dir / "trajectories" / str(idx)),
+            )
+            _set_traj_status(batch_id, idx, status="pending", steps=0)
+        _set_status(batch_id, status="pending", phase="pending", started_at=time.time())
 
         def _worker() -> None:
-            _set_status(run_id, status="running", executing_in_docker=True)
-            db.update_run(run_id, status="running")
+            _set_status(batch_id, status="running", phase="running")
+            db.update_batch(batch_id, status="running")
+
+            def on_phase(phase: str) -> None:
+                if phase == "synthesizing":
+                    _set_status(batch_id, status="synthesizing", phase="synthesizing")
+                    db.update_batch(batch_id, status="synthesizing")
+                else:
+                    _set_status(batch_id, phase=phase)
+
+            def on_traj_status(idx: int, status: str, info: dict) -> None:
+                _set_traj_status(batch_id, idx, status=status, steps=info.get("steps", 0))
+                db.update_trajectory(
+                    f"{batch_id}-{idx}",
+                    status=status,
+                    submitted=1 if info.get("submitted") else 0,
+                    failure_reason=info.get("failure_reason"),
+                    steps=info.get("steps", 0),
+                    finished_at=time.time() if status != "running" else None,
+                )
+
+            def on_step(idx: int, rec) -> None:
+                _set_traj_status(batch_id, idx, status="running", steps=rec.step)
+
             try:
-                result, _meta = run_analysis(
-                    data_dir=data_dir, config=cfg, run_dir=run_dir, run_id=run_id,
-                    on_step=lambda rec: _set_status(run_id, steps=rec.step),
+                bres = run_batch(
+                    data_dir=data_dir, config=cfg, batch_dir=batch_dir,
+                    n_trajectories=n, batch_id=batch_id,
+                    on_phase=on_phase, on_trajectory_status=on_traj_status, on_step=on_step,
                 )
-                status = "completed" if result.submitted else "failed"
+                cons = bres.consensus or {}
+                ok = bool(cons.get("consensus"))
+                status = "completed" if ok else "failed"
                 _set_status(
-                    run_id, status=status, executing_in_docker=False,
-                    submitted=result.submitted, failure_reason=result.failure_reason,
+                    batch_id, status=status, phase="done",
+                    consensus_ok=ok, n_submitted=cons.get("n_submitted", 0),
+                    failure_reason=cons.get("failure_reason"),
                 )
-                db.update_run(
-                    run_id, status=status, finished_at=time.time(),
-                    submitted=1 if result.submitted else 0,
-                    failure_reason=result.failure_reason,
+                db.update_batch(
+                    batch_id, status=status, finished_at=time.time(),
+                    consensus_ok=1 if ok else 0, n_submitted=cons.get("n_submitted", 0),
+                    failure_reason=cons.get("failure_reason"),
                 )
-            except Exception as e:  # Docker missing, provider error, etc.
-                _set_status(run_id, status="error", executing_in_docker=False,
-                            failure_reason=str(e))
-                db.update_run(run_id, status="error", finished_at=time.time(),
-                              failure_reason=str(e))
+            except Exception as e:  # Docker missing, etc. — whole batch could not run
+                _set_status(batch_id, status="error", phase="done", failure_reason=str(e))
+                db.update_batch(
+                    batch_id, status="error", finished_at=time.time(), failure_reason=str(e)
+                )
 
         threading.Thread(target=_worker, daemon=True).start()
-        return {"run_id": run_id, "status": "pending"}
+        return {"run_id": batch_id, "status": "pending", "n_trajectories": n}
 
     @app.get("/api/runs")
     def list_runs(project_id: Optional[str] = None) -> dict[str, Any]:
-        return {"runs": db.list_runs(project_id)}
+        return {"runs": db.list_batches(project_id)}
 
-    def _run_or_404(rid: str) -> dict[str, Any]:
-        run = db.get_run(rid)
-        if not run:
+    def _batch_or_404(rid: str) -> dict[str, Any]:
+        batch = db.get_batch(rid)
+        if not batch:
             raise HTTPException(status_code=404, detail="Run not found")
-        return run
+        return batch
+
+    def _trajectory_summaries(rid: str, batch: dict[str, Any]) -> list[dict[str, Any]]:
+        base = Path(batch["artifact_dir"]) / "trajectories"
+        live = _get_status(rid).get("trajectories", {})
+        out = []
+        for t in db.list_trajectories(rid):
+            idx = t["idx"]
+            live_t = live.get(str(idx), {})
+            traj = Trajectory(base / str(idx))
+            out.append({
+                "idx": idx,
+                "status": live_t.get("status", t["status"]),
+                "steps": live_t.get("steps", t["steps"]),
+                "submitted": bool(t["submitted"]),
+                "failure_reason": t["failure_reason"],
+                "answer": traj.read_answer(),
+            })
+        return out
+
+    def _consensus_text(batch: dict[str, Any]) -> dict[str, Any]:
+        """Read the consensus from batch.json (preferred) or consensus.txt."""
+        bjson = Path(batch["artifact_dir"]) / "batch.json"
+        if bjson.exists():
+            import json
+
+            data = json.loads(bjson.read_text())
+            c = data.get("consensus") or {}
+            return {
+                "consensus": c.get("consensus"),
+                "synthesized": c.get("synthesized"),
+                "n_submitted": c.get("n_submitted"),
+                "n_total": c.get("n_total"),
+                "failure_reason": c.get("failure_reason"),
+            }
+        return {"consensus": None, "synthesized": None, "n_submitted": None,
+                "n_total": batch["n_trajectories"], "failure_reason": None}
 
     @app.get("/api/runs/{rid}")
     def get_run(rid: str) -> dict[str, Any]:
-        run = _run_or_404(rid)
+        batch = _batch_or_404(rid)
         live = _get_status(rid)
-        traj = Trajectory(run["artifact_dir"])
-        run_json = traj.read_run_json()
         return {
-            "run": run,
-            "live": live,
-            "status": live.get("status", run["status"]),
-            "answer": traj.read_answer(),
-            "run_meta": run_json,
+            "run": batch,
+            "status": live.get("status", batch["status"]),
+            "phase": live.get("phase"),
+            "trajectories": _trajectory_summaries(rid, batch),
+            "consensus": _consensus_text(batch),
         }
 
-    @app.get("/api/runs/{rid}/steps")
-    def get_steps(rid: str) -> dict[str, Any]:
-        run = _run_or_404(rid)
-        traj = Trajectory(run["artifact_dir"])
-        return {"steps": traj.read_actions(), "status": _get_status(rid).get("status", run["status"])}
+    @app.get("/api/runs/{rid}/trajectories")
+    def list_trajectories(rid: str) -> dict[str, Any]:
+        batch = _batch_or_404(rid)
+        return {"trajectories": _trajectory_summaries(rid, batch)}
 
-    @app.get("/api/runs/{rid}/notebook")
-    def get_notebook(rid: str) -> dict[str, Any]:
-        run = _run_or_404(rid)
-        nb = Path(run["artifact_dir"]) / "notebook.ipynb"
+    def _traj_dir_or_404(batch: dict[str, Any], idx: int) -> Path:
+        if idx < 0 or idx >= batch["n_trajectories"]:
+            raise HTTPException(status_code=404, detail="Trajectory not found")
+        return Path(batch["artifact_dir"]).resolve() / "trajectories" / str(idx)
+
+    @app.get("/api/runs/{rid}/trajectories/{idx}/steps")
+    def get_steps(rid: str, idx: int) -> dict[str, Any]:
+        batch = _batch_or_404(rid)
+        traj = Trajectory(_traj_dir_or_404(batch, idx))
+        live = _get_status(rid).get("trajectories", {}).get(str(idx), {})
+        return {"steps": traj.read_actions(), "status": live.get("status", "pending")}
+
+    @app.get("/api/runs/{rid}/trajectories/{idx}/notebook")
+    def get_notebook(rid: str, idx: int) -> dict[str, Any]:
+        batch = _batch_or_404(rid)
+        nb = _traj_dir_or_404(batch, idx) / "notebook.ipynb"
         if not nb.exists():
             return {"cells": [], "nbformat": 4}
         import json
 
         return json.loads(nb.read_text())
 
-    @app.get("/api/runs/{rid}/artifacts")
-    def list_artifacts(rid: str) -> dict[str, Any]:
-        run = _run_or_404(rid)
-        return {"artifacts": Trajectory(run["artifact_dir"]).list_artifacts()}
+    @app.get("/api/runs/{rid}/trajectories/{idx}/artifacts")
+    def list_artifacts(rid: str, idx: int) -> dict[str, Any]:
+        batch = _batch_or_404(rid)
+        return {"artifacts": Trajectory(_traj_dir_or_404(batch, idx)).list_artifacts()}
 
-    @app.get("/api/runs/{rid}/artifacts/{path:path}")
-    def get_artifact(rid: str, path: str) -> Response:
-        run = _run_or_404(rid)
-        base = Path(run["artifact_dir"]).resolve()
+    @app.get("/api/runs/{rid}/trajectories/{idx}/artifacts/{path:path}")
+    def get_artifact(rid: str, idx: int, path: str) -> Response:
+        batch = _batch_or_404(rid)
+        base = _traj_dir_or_404(batch, idx).resolve()
         target = (base / path).resolve()
-        # Traversal guard: the resolved path must stay inside the run dir.
+        # Traversal guard: the resolved path must stay inside the trajectory dir.
         if not str(target).startswith(str(base)) or not target.is_file():
             raise HTTPException(status_code=404, detail="Artifact not found")
         suffix = target.suffix.lower()
@@ -387,8 +482,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/runs/{rid}/download")
     def download_run(rid: str) -> StreamingResponse:
-        run = _run_or_404(rid)
-        base = Path(run["artifact_dir"])
+        batch = _batch_or_404(rid)
+        base = Path(batch["artifact_dir"])
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for p in base.rglob("*"):
