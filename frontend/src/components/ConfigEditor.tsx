@@ -267,8 +267,8 @@ export default function ConfigEditor({
                   onChange={(e) => setAllowRaw(e.target.checked)}
                 />
                 <span>
-                  Allow raw data to the model
-                  <span className="hint"> — by default only schemas/summaries are shared.</span>
+                  Only share schemas/summaries with the model
+                  <span className="hint"> — you can choose not to directly share raw data.</span>
                 </span>
               </label>
             </div>

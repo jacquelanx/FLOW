@@ -2,43 +2,18 @@
 
 **FLOW** is a clean, minimal, faithful re-implementation of **Finch** — FutureHouse's
 autonomous, Jupyter-native data-analysis agent ("A multi-agent system for automating
-scientific discovery") — plus a simple web UI so non-computational lab members can drive
-it.
+scientific discovery") — plus a simple web UI.
 
 FLOW is a **generative reasoning engine**, not a pipeline. Given a dataset and a research
 question, the agent writes original, executable Python/R code line-by-line inside a Docker
-container, observes the output, and adapts — exactly like Finch. There is **zero hardcoded
+container, observes the output, and adapts in a feedback loop. There is **zero hardcoded
 analysis logic** anywhere in `src/`: no gates, thresholds, cell-population definitions,
 transforms, or dataset-specific branches. The agent derives all analysis at runtime from
 the data + the question + `metadata.json`.
 
 ---
 
-## What Finch is, and where each piece lives (fidelity checklist)
-
-| Finch spec | FLOW implementation |
-|---|---|
-| Autonomous, Jupyter-native data-analysis agent | [`agent/react.py`](src/flow/agent/react.py) + [`env/notebook_env.py`](src/flow/env/notebook_env.py) |
-| Built on the **Aviary** framework (Environment / Tool / Message) | [`flow.aviary`](src/flow/aviary/) (minimal Aviary-shaped core; see ADR-001) |
-| Processes bioinformatics workflows (RNA-seq DE, flow cytometry, …) | Generic; the bio stack lives in [`docker/Dockerfile`](docker/Dockerfile), not in code |
-| **Generative**: writes ORIGINAL code in real time, not templates | [`providers/`](src/flow/providers/) + [`agent/prompts.py`](src/flow/agent/prompts.py); **no analysis in src** (enforced by [`tests/test_no_hardcoded_analysis.py`](tests/test_no_hardcoded_analysis.py)) |
-| Adapts to the data distribution | The model decides everything from observations; FLOW supplies only the environment |
-| **ReAct** prompting strategy | [`agent/react.py`](src/flow/agent/react.py), [`agent/prompts.py`](src/flow/agent/prompts.py) |
-| Each trajectory runs inside a pre-built Docker container (BixBench-env) | [`docker/Dockerfile`](docker/Dockerfile) → image `flow-bixbench-env:1.0`; [`env/kernel.py`](src/flow/env/kernel.py) |
-| Can install new dependencies competently | network opt-in (`safety.allow_network`) in [`config.py`](src/flow/config.py) + [`docker_runtime.py`](src/flow/env/docker_runtime.py) |
-| Interacts via **exactly two tools** | [`env/notebook_env.py`](src/flow/env/notebook_env.py) registers only `edit_cell` + `submit_answer` |
-| `edit_cell`: select, modify, execute cells | `NotebookEnvironment._edit_cell` |
-| `submit_answer`: finalize the conclusion | `NotebookEnvironment._submit_answer` |
-| Persistent kernel; state persists across cell edits | [`env/kernel_server.py`](src/flow/env/kernel_server.py) (persistent namespace) + `DockerKernel` (one long-lived container) |
-| Observations = truncated outputs; images summarized | `notebook_env._format_observation` (truncation) + `kernel_server` (`[image: …]`) |
-| Environment never completes the analysis; no-submit ⇒ fail | `react.py` (budget exhaustion ⇒ failed trajectory) |
-| Auditable trajectory artifacts | [`trajectory.py`](src/flow/trajectory.py): `notebook.ipynb`, `actions.jsonl`, `answer.txt`, `run.json` (image digest, limits) |
-| Safety: Docker-only, RO mount, network none, limits, non-root | [`env/docker_runtime.py`](src/flow/env/docker_runtime.py) + [`tests/test_safety.py`](tests/test_safety.py) |
-| API + UI for lab members | [`api/app.py`](src/flow/api/app.py), [`frontend/`](frontend/) |
-
----
-
-## Non-negotiable principles
+## HUGE principles
 
 1. **No hardcoded analysis.** Zero domain/analysis logic in `src/`. Grepping for analysis
    terms in `src/` returns nothing outside prompts/tests/docs (enforced by a test).
@@ -46,7 +21,8 @@ the data + the question + `metadata.json`.
    shortcut, no templated-analysis engine.
 3. **All agent code runs in Docker, never on the host.** If Docker is unavailable, FLOW
    refuses with an actionable message.
-4. Everything is config/argument/upload-driven; no scientific domain is baked in.
+4. Everything is config/argument/upload-driven; no scientific domain is baked in. This
+   makes the codebase generalizable. 
 5. The user-editable config contains **no** analysis logic — only dataset locations, the
    research question, runtime, and safety. The loader actively rejects analysis keys.
 
@@ -202,5 +178,3 @@ export GEMINI_API_KEY=...     # then: flow run --provider gemini --model gemini-
   install (network opt-in) if a prebuilt binary is unavailable.
 - On macOS, Docker Desktop only bind-mounts shared paths (e.g. under your home directory);
   keep project folders under a shared location.
-
-See [`DESIGN.md`](DESIGN.md) for architecture decisions (ADRs).

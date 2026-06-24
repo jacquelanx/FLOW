@@ -103,7 +103,7 @@ export default function App() {
     <div className="app">
       <nav className="sidebar">
         <h1>FLOW</h1>
-        <div className="tag">Finch-faithful analysis agent</div>
+        <div className="tag">Flow cytometry analysis agent</div>
         {NAV_GROUPS.map((group, gi) => (
           <div key={gi}>
             {group.section && <div className="navsection">{group.section}</div>}
