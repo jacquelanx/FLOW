@@ -161,7 +161,18 @@ export default function App() {
         )}
         {page === "artifacts" && viewRunId && <ArtifactBrowser runId={viewRunId} />}
         {page === "history" && projectId && (
-          <RunHistory projectId={projectId} onSelectRun={onSelectRun} />
+          <RunHistory
+            projectId={projectId}
+            onSelectRun={onSelectRun}
+            onRunDeleted={(rid) => {
+              // If the deleted run was the one being viewed, drop the selection.
+              if (selectedRunId === rid) setSelectedRunId(null);
+              if (activeRunId === rid) setActiveRunId(null);
+              if (localStorage.getItem("flow.selectedRunId") === rid) {
+                localStorage.removeItem("flow.selectedRunId");
+              }
+            }}
+          />
         )}
         {!projectId && page !== "project" && (
           <div className="banner warn">Select or create a project first.</div>

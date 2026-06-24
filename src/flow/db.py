@@ -198,3 +198,10 @@ def list_trajectories(batch_id: str) -> list[dict[str, Any]]:
             "SELECT * FROM trajectories WHERE batch_id = ? ORDER BY idx ASC", (batch_id,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def delete_batch(batch_id: str) -> None:
+    """Remove a batch and its trajectory rows from the DB (artifacts deleted separately)."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM trajectories WHERE batch_id = ?", (batch_id,))
+        conn.execute("DELETE FROM batches WHERE id = ?", (batch_id,))

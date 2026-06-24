@@ -26,6 +26,7 @@ The host never executes agent code directly.
 from __future__ import annotations
 
 import io
+import shutil
 import threading
 import time
 import uuid
@@ -53,7 +54,13 @@ from flow.env.docker_runtime import DEFAULT_IMAGE, doctor
 from flow.providers.registry import MODEL_CATALOG, SUPPORTED_PROVIDERS, UI_PROVIDERS, default_model
 from flow.runner import run_batch
 from flow.trajectory import Trajectory
-from flow.validation import MAX_UPLOAD_BYTES, UnsafePathError, profile_project, safe_filename
+from flow.validation import (
+    MAX_UPLOAD_BYTES,
+    UnsafePathError,
+    profile_project,
+    safe_filename,
+    sanitize_filename,
+)
 
 # In-memory live status for active runs (DB holds the durable record).
 _RUN_STATUS: dict[str, dict[str, Any]] = {}
@@ -180,10 +187,11 @@ def create_app() -> FastAPI:
     async def upload_file(pid: str, file: UploadFile = File(...)) -> dict[str, Any]:
         proj = _project_or_404(pid)
         try:
-            name = safe_filename(file.filename or "")
+            name = sanitize_filename(file.filename or "")
         except UnsafePathError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        dest = Path(proj["path"]) / name
+        project_dir = Path(proj["path"])
+        dest = project_dir / name
         size = 0
         with dest.open("wb") as out:
             while True:
@@ -196,15 +204,85 @@ def create_app() -> FastAPI:
                     dest.unlink(missing_ok=True)
                     raise HTTPException(status_code=413, detail="File exceeds size limit.")
                 out.write(chunk)
+
+        # A .zip is expanded: FCS files become an fcs_dir (named after the zip); other
+        # recognized files land at the project root. The zip itself is then removed.
+        if name.lower().endswith(".zip"):
+            try:
+                extracted = _extract_zip(dest, project_dir)
+            except zipfile.BadZipFile:
+                dest.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail="Uploaded file is not a valid zip.")
+            dest.unlink(missing_ok=True)
+            return {"zip": True, "extracted": extracted, "size": size}
+
         from flow.validation import validate_file
 
         report = validate_file(dest)
         return {"file": report.__dict__, "size": size}
 
+    def _extract_zip(zip_path: Path, project_dir: Path) -> list[dict[str, Any]]:
+        """Safely extract a zip: FCS -> <stem>/ subdir, other files -> project root.
+
+        Uses basenames only (zip-slip safe), skips macOS junk, and caps total expanded
+        size to guard against zip bombs.
+        """
+        max_total = 2 * 1024 * 1024 * 1024
+        total = 0
+        try:
+            stem = sanitize_filename(zip_path.stem)
+        except UnsafePathError:
+            stem = "extracted"
+        extracted: list[dict[str, Any]] = []
+        with zipfile.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                member = Path(info.filename).name
+                if not member or "__MACOSX" in info.filename or member.startswith("._"):
+                    continue
+                try:
+                    safe = sanitize_filename(member)
+                except UnsafePathError:
+                    continue
+                total += info.file_size
+                if total > max_total:
+                    raise HTTPException(status_code=413, detail="Zip expands beyond size limit.")
+                if Path(safe).suffix.lower() == ".fcs":
+                    sub = project_dir / stem
+                    sub.mkdir(exist_ok=True)
+                    out_path = sub / safe
+                    rel = f"{stem}/{safe}"
+                else:
+                    out_path = project_dir / safe
+                    rel = safe
+                with zf.open(info) as src, out_path.open("wb") as out:
+                    shutil.copyfileobj(src, out, length=1024 * 1024)
+                extracted.append({"name": rel})
+        return extracted
+
     @app.get("/api/projects/{pid}/profile")
     def project_profile(pid: str) -> dict[str, Any]:
         proj = _project_or_404(pid)
         return profile_project(proj["path"]).to_dict()
+
+    @app.delete("/api/projects/{pid}/files/{name}")
+    def delete_file(pid: str, name: str) -> dict[str, Any]:
+        proj = _project_or_404(pid)
+        seg = name.rstrip("/")  # fcs_dir entries arrive as "samples/"
+        try:
+            seg = safe_filename(seg)
+        except UnsafePathError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        base = Path(proj["path"]).resolve()
+        target = (base / seg).resolve()
+        if not str(target).startswith(str(base)) or not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            target.unlink(missing_ok=True)
+        return {"ok": True, "deleted": seg}
 
     def _config_dict(cfg_path: Path) -> dict[str, Any]:
         """Return a structured config dict for the form (parsed file, or defaults)."""
@@ -495,6 +573,23 @@ def create_app() -> FastAPI:
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="run_{rid}.zip"'},
         )
+
+    @app.delete("/api/runs/{rid}")
+    def delete_run(rid: str) -> dict[str, Any]:
+        batch = _batch_or_404(rid)
+        live = _get_status(rid).get("status", batch["status"])
+        if live in {"pending", "running", "synthesizing"}:
+            raise HTTPException(
+                status_code=409, detail="Cannot delete a run that is still in progress."
+            )
+        # Remove artifacts on disk, the DB rows, and any in-memory status.
+        d = Path(batch["artifact_dir"])
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+        db.delete_batch(rid)
+        with _STATUS_LOCK:
+            _RUN_STATUS.pop(rid, None)
+        return {"ok": True, "deleted": rid}
 
     return app
 

@@ -7,15 +7,28 @@ import type { Batch } from "../types";
 export default function RunHistory({
   projectId,
   onSelectRun,
+  onRunDeleted,
 }: {
   projectId: string;
   onSelectRun: (rid: string) => void;
+  onRunDeleted?: (rid: string) => void;
 }) {
   const [runs, setRuns] = useState<Batch[]>([]);
 
   useEffect(() => {
     api.listRuns(projectId).then(setRuns).catch(() => setRuns([]));
   }, [projectId]);
+
+  async function remove(r: Batch) {
+    if (!confirm("Delete this run and all its artifacts? This cannot be undone.")) return;
+    try {
+      await api.deleteRun(r.id);
+      setRuns((rs) => rs.filter((x) => x.id !== r.id));
+      onRunDeleted?.(r.id);
+    } catch (e) {
+      alert(`Could not delete run: ${(e as Error).message}`);
+    }
+  }
 
   return (
     <div className="page">
@@ -42,6 +55,7 @@ export default function RunHistory({
                 <th>Trajectories</th>
                 <th>Status</th>
                 <th></th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -62,6 +76,20 @@ export default function RunHistory({
                   <td>
                     <button className="secondary" onClick={() => onSelectRun(r.id)}>
                       Open
+                    </button>
+                  </td>
+                  <td>
+                    <button
+                      className="ghost"
+                      disabled={["running", "pending", "synthesizing"].includes(r.status)}
+                      title={
+                        ["running", "pending", "synthesizing"].includes(r.status)
+                          ? "Can't delete a run in progress"
+                          : "Delete this run"
+                      }
+                      onClick={() => remove(r)}
+                    >
+                      Delete
                     </button>
                   </td>
                 </tr>

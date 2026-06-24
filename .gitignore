@@ -35,3 +35,6 @@ examples/demo/
 .DS_Store
 .vscode/
 .idea/
+
+# Claude Code local config (not part of the app)
+.claude/

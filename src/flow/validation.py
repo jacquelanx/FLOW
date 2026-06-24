@@ -52,6 +52,50 @@ def safe_filename(name: str) -> str:
     return name
 
 
+def sanitize_filename(name: str) -> str:
+    """Return a safe basename, replacing disallowed characters instead of rejecting them.
+
+    Still hard-rejects path traversal (raises UnsafePathError), but tolerates real-world
+    names (e.g. FCS files with spaces/parentheses) by mapping any character outside
+    ``[A-Za-z0-9._-]`` to ``_``. Used for uploads and zip members so cytometry filenames
+    don't fail validation purely on punctuation.
+    """
+    if not name or name in {".", ".."}:
+        raise UnsafePathError(f"Unsafe filename: {name!r}")
+    if "/" in name or "\\" in name or ".." in name:
+        raise UnsafePathError(f"Unsafe filename (path separators not allowed): {name!r}")
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
+    if not cleaned or cleaned in {".", ".."}:
+        raise UnsafePathError(f"Unsafe filename: {name!r}")
+    return cleaned
+
+
+# Optional host-side FCS reader. If flowio is installed we surface event counts + channel
+# names at upload time (parity with CSV event tables); otherwise FCS files are still
+# accepted and parsed by the agent at runtime.
+try:  # pragma: no cover - depends on optional dependency
+    import flowio as _flowio
+except Exception:  # pragma: no cover
+    _flowio = None
+
+
+def fcs_info(path: Path) -> tuple[int, list[str]] | None:
+    """Return (event_count, channel_names) for an FCS file, or None if unreadable."""
+    if _flowio is None:
+        return None
+    try:
+        fd = _flowio.FlowData(str(path))
+        # flowio exposes the $PnN detector names directly; fall back to the channels dict.
+        chans: list[str] = list(getattr(fd, "pnn_labels", None) or [])
+        if not chans:
+            for k in sorted(fd.channels, key=lambda x: int(x)):
+                info = fd.channels[k]
+                chans.append(info.get("PnN") or info.get("PnS") or f"ch{k}")
+        return int(fd.event_count), chans
+    except Exception:
+        return None
+
+
 @dataclass
 class FileReport:
     """Validation result for one file (or the FCS directory)."""
@@ -175,6 +219,10 @@ def validate_file(path: Path) -> FileReport:
         except Exception as e:
             return FileReport(name, "event_table", ok=False, detail=str(e))
     if path.suffix.lower() == ".fcs":
+        info = fcs_info(path)
+        if info:
+            n, chans = info
+            return FileReport(name, "fcs", ok=True, rows=n, columns=chans, detail="FCS file")
         return FileReport(name, "fcs", ok=True, detail="FCS file (parsed at runtime)")
     return FileReport(name, "unknown", ok=True, detail="accepted; not interpreted")
 
@@ -194,15 +242,21 @@ def profile_project(project_dir: str | Path) -> ProjectProfile:
 
     for p in entries:
         if p.is_dir():
-            fcs_in_dir = list(p.glob("*.fcs"))
+            fcs_in_dir = sorted(p.glob("*.fcs"))
             if fcs_in_dir:
+                info = fcs_info(fcs_in_dir[0])
+                cols = info[1] if info else []
+                detail = f"directory of {len(fcs_in_dir)} FCS file(s)"
+                if info:
+                    detail += f"; ~{info[0]} events in first file; channels from first file"
                 profile.files.append(
                     FileReport(
                         p.name + "/",
                         "fcs_dir",
                         ok=True,
                         rows=len(fcs_in_dir),
-                        detail=f"directory of {len(fcs_in_dir)} FCS file(s)",
+                        columns=cols,
+                        detail=detail,
                     )
                 )
             continue

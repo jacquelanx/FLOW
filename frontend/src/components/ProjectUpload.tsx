@@ -61,6 +61,17 @@ export default function ProjectUpload({
     }
   }
 
+  async function remove(name: string) {
+    if (!projectId) return;
+    if (!confirm(`Delete ${name}? This cannot be undone.`)) return;
+    try {
+      await api.deleteFile(projectId, name);
+      setProfile(await api.profile(projectId));
+    } catch (e) {
+      alert(`Could not delete ${name}: ${(e as Error).message}`);
+    }
+  }
+
   return (
     <div className="page">
       <header className="page-head">
@@ -159,6 +170,7 @@ export default function ProjectUpload({
                     <th>Rows</th>
                     <th>Columns</th>
                     <th>Status</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -176,6 +188,15 @@ export default function ProjectUpload({
                             error
                           </span>
                         )}
+                      </td>
+                      <td>
+                        <button
+                          className="ghost"
+                          title={`Delete ${f.name}`}
+                          onClick={() => remove(f.name)}
+                        >
+                          Delete
+                        </button>
                       </td>
                     </tr>
                   ))}

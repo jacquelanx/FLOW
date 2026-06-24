@@ -68,10 +68,19 @@ export const api = {
   async profile(pid: string): Promise<Profile> {
     return j(await fetch(`/api/projects/${pid}/profile`));
   },
-  async uploadFile(pid: string, file: File): Promise<{ file: any; size: number }> {
+  async uploadFile(pid: string, file: File): Promise<any> {
     const fd = new FormData();
     fd.append("file", file);
     return j(await fetch(`/api/projects/${pid}/files`, { method: "POST", body: fd }));
+  },
+  async deleteFile(pid: string, name: string): Promise<{ ok: boolean }> {
+    // fcs_dir entries come through as "samples/"; strip the trailing slash for the path.
+    const seg = name.replace(/\/+$/, "");
+    return j(
+      await fetch(`/api/projects/${pid}/files/${encodeURIComponent(seg)}`, {
+        method: "DELETE",
+      }),
+    );
   },
   async getConfig(pid: string): Promise<ConfigResponse> {
     return j(await fetch(`/api/projects/${pid}/config`));
@@ -122,6 +131,9 @@ export const api = {
   },
   async getRun(rid: string): Promise<BatchStatus> {
     return j(await fetch(`/api/runs/${rid}`));
+  },
+  async deleteRun(rid: string): Promise<{ ok: boolean }> {
+    return j(await fetch(`/api/runs/${rid}`, { method: "DELETE" }));
   },
   async getTrajectories(rid: string): Promise<TrajectorySummary[]> {
     const r = await j<{ trajectories: TrajectorySummary[] }>(
