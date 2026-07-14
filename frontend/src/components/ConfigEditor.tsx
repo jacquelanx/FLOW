@@ -26,19 +26,22 @@ export default function ConfigEditor({
   const [metaProvider, setMetaProvider] = useState("mock");
   const [metaModel, setMetaModel] = useState("mock");
   const [maxSteps, setMaxSteps] = useState(30);
+  const [firstRun, setFirstRun] = useState("auto");
   const [allowNetwork, setAllowNetwork] = useState(false);
-  const [allowRaw, setAllowRaw] = useState(false);
   const [perCell, setPerCell] = useState(120);
   const [perTraj, setPerTraj] = useState(1800);
   const [memory, setMemory] = useState("4g");
   const [cpus, setCpus] = useState("2");
 
+  const [customPrompt, setCustomPrompt] = useState("");
+  const [promptSaved, setPromptSaved] = useState<boolean | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showYaml, setShowYaml] = useState(false);
   const [yamlPreview, setYamlPreview] = useState("");
   const [status, setStatus] = useState<{ ok: boolean; error?: string } | null>(null);
 
   useEffect(() => {
+    api.getPrompt(projectId).then((p) => setCustomPrompt(p.content)).catch(() => {});
     Promise.all([api.providersInfo(), api.getConfig(projectId)]).then(([pi, cfg]) => {
       setInfo(pi);
       const c = cfg.config;
@@ -58,10 +61,10 @@ export default function ConfigEditor({
         setMetaModel(c.runtime?.model || pi.default_models[p] || "mock");
       }
       setMaxSteps(c.runtime?.max_steps ?? 30);
+      setFirstRun(c.runtime?.first_run || "auto");
       setPerCell(c.runtime?.per_cell_timeout ?? 120);
       setPerTraj(c.runtime?.per_trajectory_timeout ?? 1800);
       setAllowNetwork(Boolean(c.safety?.allow_network));
-      setAllowRaw(Boolean(c.safety?.allow_raw_data_to_model));
       setMemory(c.safety?.memory || "4g");
       setCpus(c.safety?.cpus || "2");
       setYamlPreview(cfg.content);
@@ -84,13 +87,13 @@ export default function ConfigEditor({
       model,
       meta_provider: diffMeta ? metaProvider : "",
       meta_model: diffMeta ? metaModel : "",
+      first_run: firstRun,
       max_steps: maxSteps,
       per_cell_timeout: perCell,
       per_trajectory_timeout: perTraj,
       memory,
       cpus,
       allow_network: allowNetwork,
-      allow_raw_data_to_model: allowRaw,
     });
     setStatus(r);
     if (r.ok && r.content) setYamlPreview(r.content);
@@ -198,6 +201,69 @@ export default function ConfigEditor({
       </section>
 
       <section className="card">
+        <h3 className="card-title">First-run</h3>
+        <select
+          id="cfg-firstrun"
+          value={firstRun}
+          onChange={(e) => setFirstRun(e.target.value)}
+        >
+          <option value="auto">Auto — run this project’s first-run script before the agent</option>
+          <option value="none">None — agent starts from a blank notebook</option>
+        </select>
+        <p className="hint">
+          The first-run script (set on the <strong>Analysis</strong> page) does the flow analysis
+          <em> before</em> the agent, and the agent interprets its output. “Auto” runs it if the
+          project has one; “None” skips it.
+        </p>
+      </section>
+
+      <section className="card">
+        <h3 className="card-title">Custom LLM prompt (optional)</h3>
+        <p className="hint" style={{ marginTop: 0 }}>
+          Free-form extra instructions for the agent, <strong>added on top of</strong> FLOW’s
+          default prompt. For the structured biology (panel, gating, populations), use the
+          <strong> Analysis</strong> page — this box is only for anything that doesn’t fit there,
+          and the two are kept separate so neither overwrites the other.
+        </p>
+        <textarea
+          rows={8}
+          value={customPrompt}
+          onChange={(e) => {
+            setCustomPrompt(e.target.value);
+            setPromptSaved(null);
+          }}
+          placeholder="e.g. Gating hierarchy: 1) Debris removal FSC-A > 10000 …"
+        />
+        <div className="actions" style={{ marginTop: 12 }}>
+          <label className="secondary" style={{ display: "inline-block", cursor: "pointer" }}>
+            Upload .md/.txt
+            <input
+              type="file"
+              accept=".md,.txt,text/plain,text/markdown"
+              style={{ display: "none" }}
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (f) {
+                  setCustomPrompt(await f.text());
+                  setPromptSaved(null);
+                }
+              }}
+            />
+          </label>
+          <button
+            className="secondary"
+            onClick={async () => {
+              await api.savePrompt(projectId, customPrompt);
+              setPromptSaved(true);
+            }}
+          >
+            Save prompt
+          </button>
+          {promptSaved && <span className="muted">Saved.</span>}
+        </div>
+      </section>
+
+      <section className="card">
         <button
           className="disclosure"
           aria-expanded={showAdvanced}
@@ -258,17 +324,6 @@ export default function ConfigEditor({
                 <span>
                   Allow network in the sandbox
                   <span className="hint"> — lets the agent install packages (off by default).</span>
-                </span>
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={allowRaw}
-                  onChange={(e) => setAllowRaw(e.target.checked)}
-                />
-                <span>
-                  Only share schemas/summaries with the model
-                  <span className="hint"> — you can choose not to directly share raw data.</span>
                 </span>
               </label>
             </div>

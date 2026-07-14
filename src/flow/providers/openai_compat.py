@@ -66,6 +66,17 @@ class OpenAICompatibleProvider(Provider):
                 f"Missing API key: set the {api_key_env} environment variable on the host."
             )
 
+    def _headers(self) -> dict:
+        """Auth + content headers for the request (overridable per vendor)."""
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _chat_url(self) -> str:
+        """Full chat/completions URL (overridable per vendor)."""
+        return f"{self.base_url}/chat/completions"
+
     def _post(self, payload: dict) -> "httpx.Response":
         """POST to chat/completions with transient-error retry + backoff.
 
@@ -73,16 +84,14 @@ class OpenAICompatibleProvider(Provider):
         and network blips with honored Retry-After; never retries a hard 'limit: 0' quota
         refusal. Raises ProviderError only on exhausted network failures.
         """
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers()
+        url = self._chat_url()
         last_err = ""
         r = None
         for attempt in range(self.max_retries + 1):
             try:
                 r = httpx.post(
-                    f"{self.base_url}/chat/completions",
+                    url,
                     headers=headers,
                     json=payload,
                     timeout=self.timeout,
@@ -207,3 +216,73 @@ class OpenAICompatibleProvider(Provider):
         # Preserve the provider's original tool-call object so fields the API requires on
         # replay (e.g. Gemini's thought_signature) are echoed back verbatim next turn.
         return ToolCall(name=name, arguments=args, id=call.get("id"), raw=call)
+
+
+# Default Azure REST API version. Overridable via AZURE_OPENAI_API_VERSION. This GA
+# version supports chat completions + function calling on gpt-35-turbo / gpt-4* deployments.
+DEFAULT_AZURE_API_VERSION = "2024-10-21"
+
+
+class AzureOpenAIProvider(OpenAICompatibleProvider):
+    """Azure OpenAI Service provider.
+
+    Azure speaks the same Chat Completions request/response shape as OpenAI, so all the
+    payload building, retry, and parsing logic is inherited. Only the wire details differ:
+
+      * URL: ``{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=...``
+      * Auth: an ``api-key`` header (not ``Authorization: Bearer``).
+      * The model is identified by the **deployment name** in the URL, not the request body.
+
+    ``model`` here is the Azure *deployment name* you created in the portal (e.g. the name
+    you gave your gpt-35-turbo deployment), which is often different from the base model id.
+    Note the agent forces tool use, so the deployment must be a chat model that supports
+    function calling (gpt-35-turbo 0613+ or any gpt-4* model) — legacy completion models
+    such as text-davinci-003 will not work.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        endpoint: str,
+        api_key_env: str = "AZURE_OPENAI_API_KEY",
+        api_version: str = DEFAULT_AZURE_API_VERSION,
+        auth_header: str = "api-key",
+        name: str = "azure",
+        **kwargs,
+    ):
+        if not endpoint:
+            raise ProviderError(
+                "Missing Azure endpoint: set the AZURE_OPENAI_ENDPOINT environment "
+                "variable on the host (e.g. https://my-resource.openai.azure.com). Behind "
+                "an API Management gateway this includes the route prefix, e.g. "
+                "https://apimd.mdanderson.edu/dig/foundry"
+            )
+        if not model:
+            raise ProviderError(
+                "Azure requires a deployment name: set runtime.model to the deployment "
+                "you created in the Azure portal (not the base model id)."
+            )
+        self.endpoint = endpoint.rstrip("/")
+        self.api_version = api_version
+        # Direct Azure resources authenticate with an "api-key" header; API Management
+        # gateways usually want "Ocp-Apim-Subscription-Key". Configurable so both work.
+        self.auth_header = auth_header or "api-key"
+        # base_url is unused for Azure (URL is built from endpoint + deployment), but the
+        # parent stores it; pass the endpoint through for a sensible repr.
+        super().__init__(
+            model=model,
+            base_url=self.endpoint,
+            api_key_env=api_key_env,
+            name=name,
+            **kwargs,
+        )
+
+    def _headers(self) -> dict:
+        return {self.auth_header: self.api_key, "Content-Type": "application/json"}
+
+    def _chat_url(self) -> str:
+        return (
+            f"{self.endpoint}/openai/deployments/{self.model}"
+            f"/chat/completions?api-version={self.api_version}"
+        )

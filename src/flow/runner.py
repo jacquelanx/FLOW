@@ -73,6 +73,19 @@ def run_analysis(
         image=image,
         limits=limits,
     )
+    # Build the deterministic first-run scaffold (e.g. the cytometry pipeline) if applicable.
+    from flow.firstrun import build_first_run
+
+    fr = build_first_run(data_dir, getattr(config.runtime, "first_run", "auto"))
+
+    # Optional user-supplied prompt (added on top of FLOW's default agent guidance).
+    system_prompt_extra = ""
+    for name in ("prompt.md", "prompt.txt"):
+        p = data_dir / name
+        if p.exists():
+            system_prompt_extra = p.read_text()
+            break
+
     env = NotebookEnvironment(
         kernel=kernel,
         question=config.question,
@@ -80,6 +93,9 @@ def run_analysis(
         max_steps=config.runtime.max_steps,
         per_cell_timeout=config.runtime.per_cell_timeout,
         per_trajectory_timeout=config.runtime.per_trajectory_timeout,
+        seed_cells=fr.cells if fr else None,
+        first_run_note=fr.prompt_note if fr else "",
+        system_prompt_extra=system_prompt_extra,
     )
     provider = build_provider(config.runtime.provider, config.runtime.model, temperature)
 

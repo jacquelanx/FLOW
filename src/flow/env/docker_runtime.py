@@ -108,6 +108,7 @@ def build_run_command(
     work_dir: Path,
     kernel_server_path: Path,
     limits: DockerLimits,
+    first_run_dir: Path | None = None,
 ) -> list[str]:
     """Construct the ``docker run`` argv for a persistent kernel container.
 
@@ -150,6 +151,11 @@ def build_run_command(
         "FLOW_DATA_DIR=/data",
         "-e",
         "FLOW_WORK_DIR=/work",
+        *(
+            ["-v", f"{first_run_dir}:/flow/firstrun:ro"]
+            if first_run_dir is not None
+            else []
+        ),
         "-e",
         "FLOW_PLOTS_DIR=/work/plots",
         "-e",

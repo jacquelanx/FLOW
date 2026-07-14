@@ -7,8 +7,10 @@ import type { Profile, Project } from "../types";
 const ACCEPTED_FILES: { name: string; desc: string }[] = [
   { name: "metadata.json", desc: "Experiment facts (which detector carries which stain, key dates)." },
   { name: "flow.csv", desc: "Timepoint sheet — columns label, date." },
-  { name: "alc.csv", desc: "Absolute lymphocyte counts — columns date, alc." },
-  { name: "events.csv / .parquet", desc: "Combined per-event table, or a folder of FCS files." },
+  { name: "alc.csv", desc: "WBC count (K/µL) over time — columns date, alc. Used for absolute counts." },
+  { name: "FCS files / events.csv", desc: "A folder of FCS files, or a combined per-event table." },
+  { name: "cbc.csv", desc: "Optional per-timepoint WBC override — columns label, wbc_kul." },
+  { name: "prompt.md", desc: "Optional custom LLM prompt (added on top of the default)." },
   { name: "true_lab_results.csv", desc: "Optional ground truth — used for evaluation only." },
 ];
 
@@ -72,6 +74,22 @@ export default function ProjectUpload({
     }
   }
 
+  async function removeProject(p: Project) {
+    if (
+      !confirm(
+        `Delete project "${p.name}" and ALL of its uploaded files and runs? This cannot be undone.`,
+      )
+    )
+      return;
+    try {
+      await api.deleteProject(p.id);
+      await refreshProjects();
+      if (projectId === p.id) setProjectId(""); // clear selection if the current one was removed
+    } catch (e) {
+      alert(`Could not delete project: ${(e as Error).message}`);
+    }
+  }
+
   return (
     <div className="page">
       <header className="page-head">
@@ -89,18 +107,27 @@ export default function ProjectUpload({
             {projects.length === 0 ? (
               <p className="muted">No projects yet — create one on the right to begin.</p>
             ) : (
-              <select
-                value={projectId || ""}
-                onChange={(e) => setProjectId(e.target.value)}
-                aria-label="Select project"
-              >
-                <option value="">— choose —</option>
+              <ul className="proj-list">
                 {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.id})
-                  </option>
+                  <li key={p.id} className={p.id === projectId ? "active" : ""}>
+                    <button
+                      className="proj-pick"
+                      onClick={() => setProjectId(p.id)}
+                      aria-pressed={p.id === projectId}
+                    >
+                      <span className="proj-name">{p.name}</span>
+                      <span className="proj-id">{p.id}</span>
+                    </button>
+                    <button
+                      className="ghost"
+                      title={`Delete project "${p.name}"`}
+                      onClick={() => removeProject(p)}
+                    >
+                      Delete
+                    </button>
+                  </li>
                 ))}
-              </select>
+              </ul>
             )}
           </section>
 
@@ -217,8 +244,8 @@ export default function ProjectUpload({
             <ol className="steps-list">
               <li>Create a project and upload your data files.</li>
               <li>Set the research question and pick a model.</li>
-              <li>Launch — the agent writes and runs code in a sandbox.</li>
-              <li>Watch it work, then read its conclusion and artifacts.</li>
+              <li>An automated first-run pipeline preprocesses the data (e.g. gating).</li>
+              <li>AI agents review &amp; refine those results, then agree on a consensus.</li>
             </ol>
           </section>
 

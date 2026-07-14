@@ -58,6 +58,10 @@ class NotebookEnvironment(Environment):
         max_steps: int = 30,
         per_cell_timeout: float = 120.0,
         per_trajectory_timeout: float = 1800.0,
+        seed_cells: list[str] | None = None,
+        first_run_note: str = "",
+        seed_cell_timeout: float = 900.0,
+        system_prompt_extra: str = "",
     ):
         self.kernel = kernel
         self.question = question
@@ -65,6 +69,13 @@ class NotebookEnvironment(Environment):
         self.max_steps = max_steps
         self.per_cell_timeout = per_cell_timeout
         self.per_trajectory_timeout = per_trajectory_timeout
+        # Deterministic first-run cells executed at reset() before the agent acts. They do
+        # NOT count against the agent's step budget; their output primes the first observation.
+        self.seed_cells = seed_cells or []
+        self.first_run_note = first_run_note
+        self.seed_cell_timeout = seed_cell_timeout
+        # Optional user-supplied guidance, appended to the agent's system prompt.
+        self.system_prompt_extra = system_prompt_extra
 
         self.cells: list[NotebookCell] = []
         self.steps_taken = 0
@@ -80,17 +91,48 @@ class NotebookEnvironment(Environment):
     def reset(self) -> tuple[str, list[Tool]]:
         self.kernel.start()
         self._started_at = time.time()
-        obs = (
-            "You are working in a fresh Jupyter notebook running inside a sandboxed "
-            "Docker container.\n\n"
-            f"RESEARCH QUESTION:\n{self.question}\n\n"
-            f"DATASET (read-only, mounted at the path FLOW_DATA_DIR):\n"
-            f"{self.dataset_description}\n\n"
-            "Notebook is empty. Use `edit_cell` to write and run code, inspecting the "
-            "data and building your analysis step by step. When you have a justified, "
-            "evidence-backed conclusion, call `submit_answer`."
-        )
-        return obs, self._tools
+
+        # Execute the deterministic first-run cells (if any) before the agent acts. These
+        # become cells 0..k-1 of the notebook; their output primes the first observation.
+        seed_outputs: list[str] = []
+        for src in self.seed_cells:
+            cell = NotebookCell(source=src)
+            self.cells.append(cell)
+            idx = len(self.cells) - 1
+            try:
+                res = self.kernel.execute(src, timeout=self.seed_cell_timeout)
+                cell.outputs = self._cell_outputs(res)
+                seed_outputs.append(self._format_observation(idx, res))
+            except KernelTimeout as e:
+                seed_outputs.append(f"[first-run cell {idx} timed out: {e}]")
+
+        if self.seed_cells:
+            intro = (
+                "You are working in a Jupyter notebook running inside a sandboxed Docker "
+                "container. A standardized FIRST-RUN analysis has ALREADY been executed in "
+                "the opening cell(s) below.\n\n"
+                f"RESEARCH QUESTION:\n{self.question}\n\n"
+                f"DATASET (read-only, mounted at FLOW_DATA_DIR):\n{self.dataset_description}\n\n"
+            )
+            if self.first_run_note:
+                intro += self.first_run_note + "\n\n"
+            intro += "FIRST-RUN OUTPUT:\n" + "\n\n".join(seed_outputs)
+            intro += (
+                "\n\nContinue from here with `edit_cell` (state persists; the first-run "
+                "variables are available). Submit your conclusion with `submit_answer`."
+            )
+        else:
+            intro = (
+                "You are working in a fresh Jupyter notebook running inside a sandboxed "
+                "Docker container.\n\n"
+                f"RESEARCH QUESTION:\n{self.question}\n\n"
+                f"DATASET (read-only, mounted at the path FLOW_DATA_DIR):\n"
+                f"{self.dataset_description}\n\n"
+                "Notebook is empty. Use `edit_cell` to write and run code, inspecting the "
+                "data and building your analysis step by step. When you have a justified, "
+                "evidence-backed conclusion, call `submit_answer`."
+            )
+        return intro, self._tools
 
     def step(self, action: ToolCall) -> tuple[str, float, bool, dict[str, Any]]:
         if self.done:

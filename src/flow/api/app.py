@@ -41,6 +41,14 @@ from pydantic import BaseModel
 import yaml
 
 from flow import db
+from flow.analysis_profile import (
+    AnalysisProfile,
+    compile_guidance,
+    profile_payload,
+    read_handwritten,
+    save_profile,
+    write_handwritten,
+)
 from flow.config import (
     ConfigError,
     DatasetConfig,
@@ -103,6 +111,7 @@ class ConfigFormBody(BaseModel):
     model: str = "mock"
     meta_provider: str = ""
     meta_model: str = ""
+    first_run: str = "auto"
     max_steps: int = 30
     per_cell_timeout: float = 120.0
     per_trajectory_timeout: float = 1800.0
@@ -110,7 +119,6 @@ class ConfigFormBody(BaseModel):
     cpus: str = "2"
     pids_limit: int = 256
     allow_network: bool = False
-    allow_raw_data_to_model: bool = False
 
 
 class StartRunBody(BaseModel):
@@ -121,6 +129,8 @@ class StartRunBody(BaseModel):
     # Consensus synthesis model (blank = same as provider/model above).
     meta_provider: str = ""
     meta_model: str = ""
+    # First-run scaffold: "auto" (run the project's first_run.py) | "none" ("" = leave config).
+    first_run: str = ""
     max_steps: Optional[int] = None
     # Number of independent trajectories to run before the consensus meta-analysis.
     n_trajectories: int = 8
@@ -182,6 +192,33 @@ def create_app() -> FastAPI:
         proj = _project_or_404(pid)
         profile = profile_project(proj["path"])
         return {"project": proj, "profile": profile.to_dict()}
+
+    @app.delete("/api/projects/{pid}")
+    def delete_project(pid: str) -> dict[str, Any]:
+        proj = _project_or_404(pid)
+        batches = db.list_batches(pid)
+        # Refuse while any run is still active (same guard as deleting a single run).
+        for b in batches:
+            live = _get_status(b["id"]).get("status", b["status"])
+            if live in {"pending", "running", "synthesizing"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot delete a project while one of its runs is in progress.",
+                )
+        # Remove run artifacts on disk, then the project's own directory.
+        for b in batches:
+            d = Path(b["artifact_dir"])
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+        proj_dir = Path(proj["path"])
+        if proj_dir.exists():
+            shutil.rmtree(proj_dir, ignore_errors=True)
+        # Drop DB rows and any in-memory run status.
+        db.delete_project(pid)
+        with _STATUS_LOCK:
+            for b in batches:
+                _RUN_STATUS.pop(b["id"], None)
+        return {"ok": True, "deleted": pid}
 
     @app.post("/api/projects/{pid}/files")
     async def upload_file(pid: str, file: UploadFile = File(...)) -> dict[str, Any]:
@@ -320,6 +357,68 @@ def create_app() -> FastAPI:
             return {"ok": False, "error": str(e)}
         return {"ok": True}
 
+    @app.get("/api/projects/{pid}/prompt")
+    def get_prompt(pid: str) -> dict[str, Any]:
+        """Read only the hand-written part of the prompt.
+
+        prompt.md may also contain a block generated from the Analysis page; that block is
+        owned there, so it is excluded here to avoid the two editors clobbering each other.
+        """
+        proj = _project_or_404(pid)
+        txt = Path(proj["path"]) / "prompt.txt"
+        if txt.exists():  # legacy plain-text prompt
+            return {"content": txt.read_text(), "exists": True, "name": "prompt.txt"}
+        content = read_handwritten(proj["path"])
+        return {"content": content, "exists": bool(content), "name": "prompt.md"}
+
+    @app.post("/api/projects/{pid}/prompt")
+    def save_prompt(pid: str, body: SaveConfigBody) -> dict[str, Any]:
+        """Save the hand-written prompt, preserving any Analysis-page generated block."""
+        proj = _project_or_404(pid)
+        write_handwritten(proj["path"], body.content)
+        return {"ok": True}
+
+    # ------------------------------------------------------------- analysis profile
+    # The biologist-owned analysis specification (see flow.analysis_profile). Stored in its
+    # own sidecar file and compiled into prompt.md — config.yaml stays analysis-free and the
+    # first-run script is untouched. All domain vocabulary lives in the guidance module.
+    @app.get("/api/projects/{pid}/analysis")
+    def get_analysis(pid: str) -> dict[str, Any]:
+        proj = _project_or_404(pid)
+        return profile_payload(proj["path"])
+
+    @app.post("/api/projects/{pid}/analysis")
+    def save_analysis(pid: str, body: AnalysisProfile) -> dict[str, Any]:
+        proj = _project_or_404(pid)
+        save_profile(proj["path"], body)
+        return {"ok": True, "guidance_preview": compile_guidance(body)}
+
+    # ------------------------------------------------------------- first-run script
+    # The deterministic first-run script is provided by the biologist (edited/uploaded on the
+    # Analysis page), saved as first_run.py in the project. The harness runs whatever is here;
+    # no analysis is hardcoded in FLOW. A new project is seeded with an editable example.
+    @app.get("/api/projects/{pid}/first-run-script")
+    def get_first_run_script(pid: str) -> dict[str, Any]:
+        from flow.firstrun import SCRIPT_FILENAME, example_script
+
+        proj = _project_or_404(pid)
+        p = Path(proj["path"]) / SCRIPT_FILENAME
+        if p.exists():
+            return {"content": p.read_text(), "seeded": False, "filename": SCRIPT_FILENAME}
+        return {"content": example_script(), "seeded": True, "filename": SCRIPT_FILENAME}
+
+    @app.post("/api/projects/{pid}/first-run-script")
+    def save_first_run_script(pid: str, body: SaveConfigBody) -> dict[str, Any]:
+        from flow.firstrun import SCRIPT_FILENAME
+
+        proj = _project_or_404(pid)
+        p = Path(proj["path"]) / SCRIPT_FILENAME
+        if body.content.strip():
+            p.write_text(body.content)
+            return {"ok": True, "saved": True}
+        p.unlink(missing_ok=True)  # empty content disables the first-run
+        return {"ok": True, "saved": False}
+
     @app.post("/api/projects/{pid}/config/form")
     def save_config_form(pid: str, body: ConfigFormBody) -> dict[str, Any]:
         """Structured save from the friendly form: builds analysis-free YAML server-side."""
@@ -333,6 +432,7 @@ def create_app() -> FastAPI:
                     model=body.model,
                     meta_provider=body.meta_provider,
                     meta_model=body.meta_model,
+                    first_run=body.first_run,
                     max_steps=body.max_steps,
                     per_cell_timeout=body.per_cell_timeout,
                     per_trajectory_timeout=body.per_trajectory_timeout,
@@ -342,7 +442,6 @@ def create_app() -> FastAPI:
                     cpus=body.cpus,
                     pids_limit=body.pids_limit,
                     allow_network=body.allow_network,
-                    allow_raw_data_to_model=body.allow_raw_data_to_model,
                 ),
             )
         except Exception as e:  # e.g. empty question
@@ -379,6 +478,8 @@ def create_app() -> FastAPI:
         cfg.runtime.model = body.model
         cfg.runtime.meta_provider = body.meta_provider
         cfg.runtime.meta_model = body.meta_model
+        if body.first_run:
+            cfg.runtime.first_run = body.first_run
         if body.max_steps:
             cfg.runtime.max_steps = body.max_steps
 

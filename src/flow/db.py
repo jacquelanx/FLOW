@@ -112,6 +112,24 @@ def list_projects() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def delete_project(project_id: str) -> None:
+    """Remove a project and all its batches/trajectories from the DB.
+
+    On-disk files (the project dir and run artifacts) are removed by the API layer.
+    """
+    with _connect() as conn:
+        batch_ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM batches WHERE project_id = ?", (project_id,)
+            ).fetchall()
+        ]
+        for bid in batch_ids:
+            conn.execute("DELETE FROM trajectories WHERE batch_id = ?", (bid,))
+        conn.execute("DELETE FROM batches WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+
 # ----------------------------------------------------------------- batches
 def create_batch(
     batch_id: str,

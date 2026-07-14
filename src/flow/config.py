@@ -34,6 +34,10 @@ class RuntimeConfig(BaseModel):
     # model than the one that ran the trajectories. This is a runtime choice, not analysis.
     meta_provider: str = ""
     meta_model: str = ""
+    # Deterministic first-run script run before the agent's interpretive work.
+    # "auto" runs the project's first_run.py (provided by the biologist) if present;
+    # "none" disables it (agent starts from a blank notebook).
+    first_run: str = "auto"
 
 
 class SafetyConfig(BaseModel):
@@ -43,8 +47,6 @@ class SafetyConfig(BaseModel):
     cpus: str = "2"
     pids_limit: int = 256
     allow_network: bool = False  # opt-in; enables dependency installs in-container
-    # Privacy boundary: by default only schemas/summaries may be sent to a hosted model.
-    allow_raw_data_to_model: bool = False
 
 
 class DatasetConfig(BaseModel):
@@ -138,8 +140,8 @@ dataset:
   description: ""   # optional free-text note about the dataset (not analysis)
 
 runtime:
-  provider: mock           # mock | ollama | gemini | groq | openrouter | deepseek | openai
-  model: mock              # e.g. gemini-2.0-flash, qwen2.5-coder, llama-3.3-70b-versatile
+  provider: mock           # mock | ollama | gemini | groq | openrouter | deepseek | openai | azure
+  model: mock              # e.g. gemini-2.0-flash, qwen2.5-coder; for azure: your deployment name
   max_steps: 30
   per_cell_timeout: 120
   per_trajectory_timeout: 1800
@@ -151,5 +153,4 @@ safety:
   cpus: "2"
   pids_limit: 256
   allow_network: false             # opt-in to let the agent install dependencies
-  allow_raw_data_to_model: false   # privacy: keep raw event data off hosted models
 """

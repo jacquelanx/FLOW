@@ -45,6 +45,17 @@ export default function ResultsDashboard({
         </p>
       </header>
 
+      {batch.run.question && (
+        <section className="card">
+          <div className="card-title">Research question</div>
+          <div className="code" style={{ fontSize: "0.95rem" }}>{batch.run.question}</div>
+          <p className="hint">
+            {batch.run.model && <>Model: {batch.run.model}. </>}
+            {batch.run.n_trajectories} trajector{batch.run.n_trajectories === 1 ? "y" : "ies"}.
+          </p>
+        </section>
+      )}
+
       {running && (
         <div className="banner warn">
           <span className="spinner" /> Run is {status}… {nSubmitted}/{batch.run.n_trajectories}{" "}

@@ -1,6 +1,8 @@
 // Thin typed wrapper over the FLOW backend API. All calls go to /api (proxied in dev).
 
 import type {
+  AnalysisPayload,
+  AnalysisProfile,
   Artifact,
   Batch,
   BatchStatus,
@@ -20,6 +22,7 @@ export interface ConfigForm {
   model: string;
   meta_provider?: string;
   meta_model?: string;
+  first_run?: string;
   max_steps: number;
   per_cell_timeout?: number;
   per_trajectory_timeout?: number;
@@ -27,7 +30,6 @@ export interface ConfigForm {
   cpus?: string;
   pids_limit?: number;
   allow_network?: boolean;
-  allow_raw_data_to_model?: boolean;
 }
 
 async function j<T>(res: Response): Promise<T> {
@@ -65,6 +67,9 @@ export const api = {
   async getProject(pid: string): Promise<{ project: Project; profile: Profile }> {
     return j(await fetch(`/api/projects/${pid}`));
   },
+  async deleteProject(pid: string): Promise<{ ok: boolean; deleted: string }> {
+    return j(await fetch(`/api/projects/${pid}`, { method: "DELETE" }));
+  },
   async profile(pid: string): Promise<Profile> {
     return j(await fetch(`/api/projects/${pid}/profile`));
   },
@@ -94,6 +99,50 @@ export const api = {
       }),
     );
   },
+  async getPrompt(pid: string): Promise<{ content: string; exists: boolean }> {
+    return j(await fetch(`/api/projects/${pid}/prompt`));
+  },
+  async savePrompt(pid: string, content: string): Promise<{ ok: boolean }> {
+    return j(
+      await fetch(`/api/projects/${pid}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      }),
+    );
+  },
+  async getAnalysis(pid: string): Promise<AnalysisPayload> {
+    return j(await fetch(`/api/projects/${pid}/analysis`));
+  },
+  async getFirstRunScript(
+    pid: string,
+  ): Promise<{ content: string; seeded: boolean; filename: string }> {
+    return j(await fetch(`/api/projects/${pid}/first-run-script`));
+  },
+  async saveFirstRunScript(
+    pid: string,
+    content: string,
+  ): Promise<{ ok: boolean; saved: boolean }> {
+    return j(
+      await fetch(`/api/projects/${pid}/first-run-script`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      }),
+    );
+  },
+  async saveAnalysis(
+    pid: string,
+    profile: AnalysisProfile,
+  ): Promise<{ ok: boolean; error?: string; guidance_preview?: string }> {
+    return j(
+      await fetch(`/api/projects/${pid}/analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(profile),
+      }),
+    );
+  },
   async saveConfigForm(
     pid: string,
     form: ConfigForm,
@@ -113,6 +162,7 @@ export const api = {
     model: string;
     meta_provider?: string;
     meta_model?: string;
+    first_run?: string;
     max_steps?: number;
     n_trajectories: number;
   }): Promise<{ run_id: string; status: string; n_trajectories: number }> {

@@ -39,7 +39,19 @@ _OPENAI_COMPAT = {
     },
 }
 
-SUPPORTED_PROVIDERS = ["mock", "ollama", *sorted(_OPENAI_COMPAT.keys())]
+# Azure OpenAI is handled separately from the plain OpenAI-compatible endpoints because
+# its URL/auth differ and it is configured per-resource from the host environment:
+#   AZURE_OPENAI_ENDPOINT      e.g. https://my-resource.openai.azure.com   (required)
+#   AZURE_OPENAI_API_KEY       the resource key                            (required)
+#   AZURE_OPENAI_API_VERSION   REST api-version                            (optional)
+_AZURE_PROVIDERS = {"azure", "azure_openai"}
+
+SUPPORTED_PROVIDERS = [
+    "mock",
+    "ollama",
+    "azure",
+    *sorted(_OPENAI_COMPAT.keys()),
+]
 
 # Curated, commonly-available models per provider, for the UI dropdowns. This is a
 # convenience catalog only — any model id the provider serves still works (the UI offers a
@@ -61,6 +73,9 @@ MODEL_CATALOG: dict[str, list[str]] = {
     ],
     "deepseek": ["deepseek-chat", "deepseek-reasoner"],
     "openai": ["gpt-4o-mini", "gpt-4o", "o4-mini"],
+    # For Azure the "model" is your deployment name, so these are placeholders/examples —
+    # replace with whatever you named your deployment in the Azure portal.
+    "azure": ["gpt-35-turbo", "gpt-4o-mini", "gpt-4o"],
 }
 
 # Providers shown in the UI (excludes the "google" alias of "gemini" to avoid confusion).
@@ -90,6 +105,22 @@ def build_provider(provider: str, model: str, temperature: float = 0.0) -> Provi
         from flow.providers.ollama import OllamaProvider
 
         return OllamaProvider(model=model or "qwen2.5-coder", temperature=temperature)
+    if key in _AZURE_PROVIDERS:
+        from flow.providers.openai_compat import (
+            DEFAULT_AZURE_API_VERSION,
+            AzureOpenAIProvider,
+        )
+
+        return AzureOpenAIProvider(
+            model=model,
+            endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+            api_version=os.environ.get(
+                "AZURE_OPENAI_API_VERSION", DEFAULT_AZURE_API_VERSION
+            ),
+            # Direct Azure uses "api-key"; APIM gateways use "Ocp-Apim-Subscription-Key".
+            auth_header=os.environ.get("AZURE_OPENAI_AUTH_HEADER", "api-key"),
+            temperature=temperature,
+        )
     if key in _OPENAI_COMPAT:
         from flow.providers.openai_compat import OpenAICompatibleProvider
 

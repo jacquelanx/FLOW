@@ -62,8 +62,16 @@ class ReActAgent:
 
     def run(self) -> AgentResult:
         obs, tools = self.env.reset()
+        system_content = SYSTEM_PROMPT
+        note = getattr(self.env, "first_run_note", "")
+        if note:
+            system_content += "\n\n" + note
+        extra = getattr(self.env, "system_prompt_extra", "")
+        if extra:
+            # User-supplied guidance is added on top of FLOW's default agent prompt.
+            system_content += "\n\n--- ADDITIONAL USER-PROVIDED GUIDANCE ---\n" + extra
         messages: list[Message] = [
-            Message(role="system", content=SYSTEM_PROMPT),
+            Message(role="system", content=system_content),
             Message(
                 role="user",
                 content=build_task_message(self.env.question, self.env.dataset_description),

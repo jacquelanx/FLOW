@@ -122,6 +122,18 @@ def test_config_save_rejects_analysis_logic(client):
     assert "analysis logic" in resp.json()["error"]
 
 
+def test_custom_prompt_save_and_get(client):
+    c, _ = client
+    pid = c.post("/api/projects", json={"name": "x"}).json()["id"]
+    assert c.get(f"/api/projects/{pid}/prompt").json()["exists"] is False
+    c.post(f"/api/projects/{pid}/prompt", json={"content": "my gating rules"})
+    got = c.get(f"/api/projects/{pid}/prompt").json()
+    assert got["exists"] is True and got["content"] == "my gating rules"
+    # Empty content clears it.
+    c.post(f"/api/projects/{pid}/prompt", json={"content": "  "})
+    assert c.get(f"/api/projects/{pid}/prompt").json()["exists"] is False
+
+
 def test_config_default_returned(client):
     c, _ = client
     pid = c.post("/api/projects", json={"name": "x"}).json()["id"]

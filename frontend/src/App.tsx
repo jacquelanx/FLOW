@@ -3,6 +3,7 @@ import { api } from "./api";
 import type { DockerHealth, Project } from "./types";
 import ProjectUpload from "./components/ProjectUpload";
 import ConfigEditor from "./components/ConfigEditor";
+import AnalysisEditor from "./components/AnalysisEditor";
 import RunLauncher from "./components/RunLauncher";
 import LiveTrajectory from "./components/LiveTrajectory";
 import NotebookViewer from "./components/NotebookViewer";
@@ -13,6 +14,7 @@ import RunHistory from "./components/RunHistory";
 type Page =
   | "project"
   | "config"
+  | "analysis"
   | "run"
   | "trajectory"
   | "notebook"
@@ -28,7 +30,8 @@ const NAV_GROUPS: { section?: string; items: NavItem[] }[] = [
     items: [
       { id: "project", label: "1 · Project & Upload" },
       { id: "config", label: "2 · Configure", needsProject: true },
-      { id: "run", label: "3 · Launch Run", needsProject: true },
+      { id: "analysis", label: "3 · Analysis", needsProject: true },
+      { id: "run", label: "4 · Launch Run", needsProject: true },
     ],
   },
   {
@@ -71,10 +74,15 @@ export default function App() {
     localStorage.setItem("flow.page", page);
   }, [page]);
   useEffect(() => {
+    // Clear the stored id when it goes empty, so a deleted/switched project can't reload.
     if (projectId) localStorage.setItem("flow.projectId", projectId);
+    else localStorage.removeItem("flow.projectId");
   }, [projectId]);
   useEffect(() => {
+    // Clear the stored run when deselected (e.g. on project switch), so a run from one
+    // project never reloads while a different project is selected.
     if (selectedRunId) localStorage.setItem("flow.selectedRunId", selectedRunId);
+    else localStorage.removeItem("flow.selectedRunId");
   }, [selectedRunId]);
 
   // The run the viewer pages should display: the active one (just launched) wins.
@@ -143,7 +151,10 @@ export default function App() {
           />
         )}
         {page === "config" && projectId && (
-          <ConfigEditor projectId={projectId} onNext={() => go("run")} />
+          <ConfigEditor projectId={projectId} onNext={() => go("analysis")} />
+        )}
+        {page === "analysis" && projectId && (
+          <AnalysisEditor projectId={projectId} onNext={() => go("run")} />
         )}
         {page === "run" && projectId && (
           <RunLauncher

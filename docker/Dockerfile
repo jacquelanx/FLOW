@@ -43,9 +43,10 @@ RUN R -e "install.packages(c('BiocManager','IRkernel'), repos='https://cloud.r-p
     && R -e "BiocManager::install(c('flowCore','openCyto','CATALYST','FlowSOM','DESeq2','edgeR','limma'), ask=FALSE, update=FALSE)" || \
        echo "WARNING: some Bioconductor packages failed to build; the agent may install them at runtime."
 
-# --- Non-root user + kernel server fallback ---------------------------------------------
+# --- Non-root user + kernel server + first-run R pipeline --------------------------------
 RUN useradd -m -u 1000 flow && mkdir -p /flow /work /data && chown -R flow:flow /flow /work
 COPY src/flow/env/kernel_server.py /flow/kernel_server.py
+COPY src/flow/firstrun/ /flow/firstrun/
 
 USER flow
 WORKDIR /work

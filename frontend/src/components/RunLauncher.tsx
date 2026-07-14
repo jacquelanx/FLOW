@@ -21,6 +21,8 @@ export default function RunLauncher({
   const [model, setModel] = useState("mock");
   const [maxSteps, setMaxSteps] = useState(30);
   const [nTrajectories, setNTrajectories] = useState(8);
+  // First-run scaffold: auto (cytometry pipeline when FCS present) | cytometry | none.
+  const [firstRun, setFirstRun] = useState("auto");
   // Consensus (meta-analysis) model — defaults to the same model as the trajectories.
   const [diffMeta, setDiffMeta] = useState(false);
   const [metaProvider, setMetaProvider] = useState("mock");
@@ -37,6 +39,7 @@ export default function RunLauncher({
       setProvider(p);
       setModel(c.runtime?.model || pi.default_models[p] || "mock");
       setMaxSteps(c.runtime?.max_steps ?? 30);
+      setFirstRun(c.runtime?.first_run || "auto");
       const mp = c.runtime?.meta_provider || "";
       const mm = c.runtime?.meta_model || "";
       if (mp || mm) {
@@ -69,6 +72,7 @@ export default function RunLauncher({
         // Blank meta fields => backend uses the same model as the trajectories.
         meta_provider: diffMeta ? metaProvider : "",
         meta_model: diffMeta ? metaModel : "",
+        first_run: firstRun,
         max_steps: maxSteps,
         n_trajectories: nTrajectories,
       });
@@ -91,6 +95,15 @@ export default function RunLauncher({
           sandboxed Docker container.
         </p>
       </header>
+
+      <div className="banner ok">
+        <strong>How a run works:</strong> first an automated <em>first-run pipeline</em> does
+        the standard preprocessing (for cytometry: load FCS → exclude debris → gate single
+        cells → measure each marker’s % positive). Then the AI agent <em>interprets and
+        refines</em> those results — checking the gating, making plots, and drawing
+        conclusions. Several agents run independently and their findings are merged into one
+        consensus.
+      </div>
 
       {!dockerReady && (
         <div className="banner err">
@@ -158,6 +171,19 @@ export default function RunLauncher({
               conclusions are then synthesized into one consensus (the paper uses 8). More
               trajectories give a more robust consensus but take longer — they run one at a
               time to keep each one’s state fully isolated.
+            </p>
+          </div>
+
+          <div className="field">
+            <label htmlFor="firstrun">First-run</label>
+            <select id="firstrun" value={firstRun} onChange={(e) => setFirstRun(e.target.value)}>
+              <option value="auto">Auto — run this project’s first-run script before the agent</option>
+              <option value="none">None — agent starts from a blank notebook</option>
+            </select>
+            <p className="hint">
+              Runs the project’s first-run script (set on the Analysis page) <em>before</em> the
+              agent, which then interprets its output. Leave on “Auto” unless you want the agent
+              to do everything from scratch.
             </p>
           </div>
 
@@ -246,6 +272,12 @@ export default function RunLauncher({
                 <div className="desc">{nTrajectories} independent → 1 consensus</div>
               </li>
               <li>
+                <div className="name">First-run</div>
+                <div className="desc">
+                  {firstRun === "none" ? "off (agent from scratch)" : `${firstRun} (preprocess, then interpret)`}
+                </div>
+              </li>
+              <li>
                 <div className="name">Consensus model</div>
                 <div className="desc">
                   {diffMeta ? `${metaProvider} / ${metaModel || "—"}` : "same as trajectories"}
@@ -257,9 +289,9 @@ export default function RunLauncher({
           <section className="card">
             <div className="card-title">What happens</div>
             <ol className="steps-list">
-              <li>{nTrajectories} agents each analyze the data in their own sandbox.</li>
-              <li>Each writes and runs its own code, step by step.</li>
-              <li>You watch every trajectory live on the next page.</li>
+              <li>The first-run pipeline preprocesses the data (gating + marker %).</li>
+              <li>{nTrajectories} agents each review and refine those results in their own sandbox.</li>
+              <li>You watch every trajectory’s interpretation live on the next page.</li>
               <li>A meta-analysis synthesizes them into one consensus conclusion.</li>
             </ol>
           </section>

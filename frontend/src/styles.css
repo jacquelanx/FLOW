@@ -696,3 +696,113 @@ img.plot {
     transition: none !important;
   }
 }
+
+/* ── Analysis editor: editable string/object lists ─────────────────────────── */
+.row-edit {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.row-edit input {
+  flex: 1;
+}
+.objlist-head {
+  display: flex;
+  gap: 8px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin-bottom: 6px;
+}
+.objlist-head > div {
+  flex: 1;
+}
+.objlist-head > div.wide,
+.objlist-row input.wide {
+  flex: 2;
+}
+.objlist-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.objlist-row input {
+  flex: 1;
+  min-width: 0;
+}
+.objlist-x {
+  width: 34px;
+  flex: 0 0 34px !important;
+  text-align: center;
+}
+
+/* ── Project list (select + delete per project) ────────────────────────────── */
+.proj-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.proj-list li {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.proj-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.proj-pick:hover {
+  background: var(--surface-2);
+}
+.proj-list li.active .proj-pick {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.proj-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj-id {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  opacity: 0.65;
+  flex: 0 0 auto;
+}
+
+/* ── Code editor (first-run script) ────────────────────────────────────────── */
+.code-editor {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  tab-size: 4;
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  resize: vertical;
+}

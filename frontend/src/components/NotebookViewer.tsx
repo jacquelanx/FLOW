@@ -31,6 +31,13 @@ export default function NotebookViewer({ runId }: { runId: string }) {
 
       <TrajectoryPicker trajectories={trajectories} idx={idx} onChange={setIdx} />
 
+      {cells.length > 0 && (
+        <div className="banner ok">
+          The <strong>first cell is the automated first-run pipeline</strong> (preprocessing +
+          gating). Everything after it is the <strong>agent’s interpretive work</strong>.
+        </div>
+      )}
+
       {!nb && <p className="muted">Loading notebook…</p>}
       {nb && cells.length === 0 && <div className="empty">No cells in this trajectory yet.</div>}
       {cells.map((c, i) => (

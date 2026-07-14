@@ -33,7 +33,7 @@ flow = "flow.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-flow = ["env/kernel_server.py"]
+flow = ["env/kernel_server.py", "firstrun/*.py", "firstrun/first_run.R"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

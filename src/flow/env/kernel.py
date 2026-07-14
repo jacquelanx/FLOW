@@ -134,6 +134,13 @@ class DockerKernel:
         require_docker(self.image)
         self._digest = image_digest(self.image)
         (self.work_dir / "plots").mkdir(parents=True, exist_ok=True)
+        # Mount the first-run scripts dir so the seed cell can invoke them (also baked in).
+        try:
+            from flow.firstrun import FIRSTRUN_DIR
+
+            first_run_dir = FIRSTRUN_DIR if FIRSTRUN_DIR.exists() else None
+        except Exception:
+            first_run_dir = None
         cmd = build_run_command(
             image=self.image,
             container_name=self.container_name,
@@ -141,6 +148,7 @@ class DockerKernel:
             work_dir=self.work_dir,
             kernel_server_path=self.kernel_server_path,
             limits=self.limits,
+            first_run_dir=first_run_dir,
         )
         self._proc = subprocess.Popen(
             cmd,

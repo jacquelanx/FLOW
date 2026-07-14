@@ -92,6 +92,7 @@ export interface RuntimeCfg {
   model: string;
   meta_provider: string;
   meta_model: string;
+  first_run: string;
   max_steps: number;
   per_cell_timeout: number;
   per_trajectory_timeout: number;
@@ -102,7 +103,6 @@ export interface SafetyCfg {
   cpus: string;
   pids_limit: number;
   allow_network: boolean;
-  allow_raw_data_to_model: boolean;
 }
 
 export interface ParsedConfig {
@@ -125,4 +125,35 @@ export interface DockerHealth {
   image: string;
   ready: boolean;
   notes: string[];
+}
+
+// Biologist-owned analysis specification (compiled to agent guidance).
+export interface MarkerDef {
+  detector: string;
+  marker: string;
+  notes: string;
+}
+
+export interface GateStep {
+  name: string;
+  definition: string;
+}
+
+export interface AnalysisProfile {
+  panel_name: string;
+  markers: MarkerDef[];
+  gating: GateStep[];
+  populations_of_interest: string[];
+  comparisons: string[];
+  qc_expectations: string;
+  desired_outputs: string[];
+  biological_context: string;
+  plain_language: boolean;
+  extra_instructions: string;
+}
+
+export interface AnalysisPayload {
+  profile: AnalysisProfile;
+  guidance_preview: string;
+  seeded: boolean;
 }

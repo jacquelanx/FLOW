@@ -23,8 +23,11 @@ KNOWN_FILES = {
     "metadata.json",
     "flow.csv",
     "alc.csv",
+    "cbc.csv",
     "config.yaml",
     "true_lab_results.csv",
+    "prompt.md",
+    "prompt.txt",
 }
 
 MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GiB per file (API also enforces)
@@ -193,6 +196,20 @@ def validate_file(path: Path) -> FileReport:
         return _validate_csv_columns(path, "timepoints", {"label", "date"})
     if name == "alc.csv":
         return _validate_csv_columns(path, "alc", {"date", "alc"})
+    if name == "cbc.csv":
+        try:
+            cols, rows = _read_csv_header_and_count(path)
+            lower = {c.lower() for c in cols}
+            has_wbc = bool(lower & {"wbc_kul", "epic_kul"})
+            ok = "label" in lower and has_wbc and "pct_lymph" in lower
+            detail = "CBC values for calibrated gating + absolute counts"
+            if not ok:
+                detail = "expected columns: label, wbc_kul, pct_lymph"
+            return FileReport(name, "cbc", ok=ok, columns=cols, rows=rows, detail=detail)
+        except Exception as e:
+            return FileReport(name, "cbc", ok=False, detail=str(e))
+    if name in {"prompt.md", "prompt.txt"}:
+        return FileReport(name, "prompt", ok=True, detail="custom LLM prompt (added on top of the default)")
     if name == "true_lab_results.csv":
         try:
             cols, rows = _read_csv_header_and_count(path)

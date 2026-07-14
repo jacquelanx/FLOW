@@ -72,6 +72,13 @@ export default function LiveTrajectory({
         </p>
       </header>
 
+      <div className="banner ok">
+        The notebook’s <strong>opening cell is the automated first-run</strong> (preprocessing
+        + gating). The steps below are the <strong>agent interpreting and refining</strong>
+        those results — so step 1 already builds on the first-run output. The full notebook,
+        including the first-run cell, is on the <em>Notebook</em> page.
+      </div>
+
       <div className="card">
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <BatchStatusBadge status={batch?.status} />
