@@ -3,10 +3,8 @@ import { api } from "../api";
 import type { ProvidersInfo } from "../types";
 import ModelPicker from "./ModelPicker";
 
-// Page 2: a friendly, form-based config editor — no raw YAML. Lab members set the research
-// question and a few run settings with labeled controls; FLOW builds the analysis-free
-// config.yaml on the server. A collapsible read-only YAML preview is available for the
-// curious, but no one needs to touch it.
+// Lab members set research question and settings; FLOW builds the analysis-free
+// config.yaml on the server. A read-only YAML preview is available but unneeded.
 export default function ConfigEditor({
   projectId,
   onNext,
@@ -17,7 +15,7 @@ export default function ConfigEditor({
   const [loaded, setLoaded] = useState(false);
   const [info, setInfo] = useState<ProvidersInfo | null>(null);
 
-  // Form fields.
+  // Form fields
   const [question, setQuestion] = useState("");
   const [description, setDescription] = useState("");
   const [provider, setProvider] = useState("mock");
@@ -108,7 +106,7 @@ export default function ConfigEditor({
         <h2>Configure the run</h2>
         <p className="subtitle">
           Set what you want to ask and how FLOW should run. You don’t specify any analysis
-          steps here — the agent works those out from your data and the question.
+          steps here; the agent works those out from your data and the question.
         </p>
       </header>
 
@@ -222,8 +220,7 @@ export default function ConfigEditor({
         <p className="hint" style={{ marginTop: 0 }}>
           Free-form extra instructions for the agent, <strong>added on top of</strong> FLOW’s
           default prompt. For the structured biology (panel, gating, populations), use the
-          <strong> Analysis</strong> page — this box is only for anything that doesn’t fit there,
-          and the two are kept separate so neither overwrites the other.
+          <strong> Analysis</strong> page — this box is only for anything that doesn’t fit there.
         </p>
         <textarea
           rows={8}

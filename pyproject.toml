@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flow-agent"
 version = "1.0.0"
-description = "FLOW — a faithful, minimal re-implementation of the Finch Jupyter-native data-analysis agent, with a web UI."
+description = "FLOW--a data-analysis agent with a web UI."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

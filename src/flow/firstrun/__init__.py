@@ -1,14 +1,11 @@
-"""First-run harness — runs the biologist's own first-run script.
+"""First-run harness.
 
 FLOW runs a deterministic *first-run script* at the start of a trajectory to do the heavy
 lifting (all the flow-cytometry analysis); the agent then only interprets the results.
 
-**No analysis is hardcoded here.** The script is provided per project by the biologist (edited
-or uploaded on the Analysis page, saved as ``first_run.py`` in the project). This module is a
-generic runner: it invokes that script in the sandbox, then loads whatever tables the script
+This module invokes a script in the sandbox, then loads the tables that the script
 produced so the agent can interpret them.
 
-Contract (the coder owns this; the biology owns the script):
   The script is invoked inside the container as::
 
       python /data/first_run.py --data /data --out /work/first_run --plots /work/plots
@@ -28,10 +25,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 FIRSTRUN_DIR = Path(__file__).resolve().parent
-# The biologist's script, saved in the project directory (which mounts read-only at /data).
+# The script, saved in the project directory (which mounts read-only at /data).
 SCRIPT_FILENAME = "first_run.py"
 CONTAINER_SCRIPT = "/data/first_run.py"
-# Starting template offered to the biologist in the editor (never executed by the harness).
+# Starting template offered in the editor (never executed by the harness)
 EXAMPLE_TEMPLATE = FIRSTRUN_DIR / "example_nk_panel.py"
 
 
@@ -95,7 +92,7 @@ def _seed_cell() -> str:
 
 
 # Generic, biology-free interpretive guidance. The SPECIFIC biology (panel, populations,
-# comparisons) reaches the agent separately, from the biologist's Analysis spec (prompt.md).
+# comparisons) reaches the agent separately, from the Analysis spec (prompt.md).
 PROMPT_NOTE = (
     "A deterministic FIRST-RUN script (provided for this project) has already run in the "
     "opening cell and produced the result tables shown above. They are loaded into the "

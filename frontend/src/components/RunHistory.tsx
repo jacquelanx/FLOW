@@ -3,7 +3,7 @@ import { api } from "../api";
 import type { Batch } from "../types";
 
 // Persistent, clickable list of past consensus runs (read from the backend DB, so it
-// survives refresh/restart). Selecting one opens its results — without hijacking the launcher.
+// survives refresh/restart). Selecting one opens its results without hijacking the launcher.
 export default function RunHistory({
   projectId,
   onSelectRun,

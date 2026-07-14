@@ -233,11 +233,10 @@ class AzureOpenAIProvider(OpenAICompatibleProvider):
       * Auth: an ``api-key`` header (not ``Authorization: Bearer``).
       * The model is identified by the **deployment name** in the URL, not the request body.
 
-    ``model`` here is the Azure *deployment name* you created in the portal (e.g. the name
-    you gave your gpt-35-turbo deployment), which is often different from the base model id.
-    Note the agent forces tool use, so the deployment must be a chat model that supports
-    function calling (gpt-35-turbo 0613+ or any gpt-4* model) — legacy completion models
-    such as text-davinci-003 will not work.
+    ``model`` here is the Azure *deployment name* found in the portal, which is often 
+    different from the base model id. The agent forces tool use, so the deployment must 
+    be a chat model that supports function calling (gpt-35-turbo 0613+ or any gpt-4* model).
+    Legacy completion models such as text-davinci-003 will not work.
     """
 
     def __init__(

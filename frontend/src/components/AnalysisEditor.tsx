@@ -2,12 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { AnalysisProfile, GateStep, MarkerDef } from "../types";
 
-// Biologist-owned analysis specification. This is where the lab's domain expert takes
-// control of the biology: the panel (detector -> marker), the gating strategy, the
-// populations to characterize, the comparisons that matter, QC expectations, and what the
-// write-up should contain. It compiles to natural-language guidance the agent follows — so
-// the science is authored here, not hard-coded in the software. It is seeded with the NK
-// panel the first-run assumes, so a biologist can review and take it over.
+// Customized instructions fed to the agent loop; seeded with the NK
+// panel the first-run assumes, so an expert can review and take it over.
 export default function AnalysisEditor({
   projectId,
   onNext,
@@ -22,7 +18,7 @@ export default function AnalysisEditor({
   const [status, setStatus] = useState<{ ok: boolean; error?: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // The deterministic first-run script (owned by the biologist).
+  // The deterministic first-run script
   const [script, setScript] = useState<string>("");
   const [scriptSeeded, setScriptSeeded] = useState(false);
   const [scriptSaved, setScriptSaved] = useState<boolean | null>(null);
@@ -47,7 +43,7 @@ export default function AnalysisEditor({
 
   if (!p) return <p className="muted">Loading…</p>;
 
-  // Generic field setter.
+  // Generic field setter
   const set = <K extends keyof AnalysisProfile>(k: K, v: AnalysisProfile[K]) =>
     setP({ ...p, [k]: v });
 
@@ -81,7 +77,7 @@ export default function AnalysisEditor({
         </div>
       )}
 
-      {/* First-run script — the deterministic analysis, owned by the biologist */}
+      {/* First-run script, the deterministic analysis */}
       <section className="card">
         <h3 className="card-title">First-run script (the deterministic analysis)</h3>
         <p className="hint" style={{ marginTop: 0 }}>

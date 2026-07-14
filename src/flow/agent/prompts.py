@@ -1,10 +1,4 @@
-"""System prompt for the FLOW agent.
-
-This is the ONLY place natural-language guidance lives. It deliberately contains **no**
-analysis recipes — it tells the agent *how to behave* (ReAct, write original code, verify
-with the data), not *what analysis to run*. All scientific decisions are the model's,
-derived at runtime from the dataset, the research question, and the experiment metadata.
-"""
+# System prompt for the FLOW agent
 
 SYSTEM_PROMPT = """\
 You are FLOW, an autonomous data-analysis agent that works inside a Jupyter notebook \

@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 
 // Reusable model dropdown driven by the backend catalog, with a "Custom…" escape so any
-// model id the provider serves can still be entered. Keeps lab members from having to
-// remember exact model strings while staying flexible.
+// model id the provider serves can still be entered.
 export default function ModelPicker({
   models,
   value,

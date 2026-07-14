@@ -5,14 +5,11 @@ content on the Analysis page; edit it (or replace it entirely) to match YOUR ass
 FLOW runs whatever script the project provides — this file is just a worked example for the
 lab's BD LSRFortessa NK-therapy panel, and the harness never imports or depends on it.
 
-Contract (any first-run script must follow this): it is invoked as
+The first-run script is invoked as
     python first_run.py --data <DATA_DIR> --out <OUT_DIR> --plots <PLOTS_DIR>
-reads the dataset from --data (FCS files, flow.csv, alc.csv, ... all live there), and writes
+Reads the dataset from --data (FCS files, flow.csv, alc.csv, ... all live there), and writes
 result CSVs to --out (and any plots to --plots). Every CSV it writes is auto-loaded into the
 agent's notebook so the agent can interpret it.
-
-It runs the ENTIRE flow-cytometry analysis so the agent's job is purely INTERPRETIVE (review,
-sanity-check, characterize kinetics, conclude) — it should not re-derive gates or recompute.
 
 It produces five standardized outputs in the ``--out`` directory:
   * ``first_run_results.csv``  — one row per sample: population %s + absolute counts (K/µL).

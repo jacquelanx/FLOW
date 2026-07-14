@@ -1,13 +1,11 @@
-# FLOW BixBench-env equivalent — the sandboxed bio-analysis container.
-#
 # Tag: flow-bixbench-env:1.0
 # Build: docker build -t flow-bixbench-env:1.0 -f docker/Dockerfile .
 #
 # This image is the ONLY place agent-written code executes. It pins a broad Python + R +
 # Bioconductor bioinformatics stack so the agent can perform RNA-seq DE, flow cytometry,
-# single-cell, and general analyses. It bakes in NO analysis logic — only libraries and a
-# non-root user. The persistent kernel server is mounted at runtime (and copied here as a
-# fallback) and is started by the host via `docker run -i ... python /flow/kernel_server.py`.
+# single-cell, and general analyses (NOTE: R stack doesn't work yet.) The persistent kernel 
+# server is mounted at runtime (and copied here as a fallback) and is started by the host as 
+# `docker run -i ... python /flow/kernel_server.py`.
 
 FROM python:3.11-slim-bookworm
 

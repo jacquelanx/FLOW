@@ -3,7 +3,7 @@ import { api } from "../api";
 import type { TrajectorySummary } from "../types";
 import TrajectoryPicker from "./TrajectoryPicker";
 
-// Renders the notebook.ipynb of a chosen trajectory within the consensus run.
+// Renders the notebook.ipynb of a chosen trajectory within the consensus run
 export default function NotebookViewer({ runId }: { runId: string }) {
   const [trajectories, setTrajectories] = useState<TrajectorySummary[]>([]);
   const [idx, setIdx] = useState(0);

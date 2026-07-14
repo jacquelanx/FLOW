@@ -1,24 +1,4 @@
-"""Biologist-owned Analysis Profile.
-
-The domain science in FLOW should be owned by the biologists who understand it — not
-hard-coded by whoever maintains the software. This module lets an expert biologist specify,
-in the web UI, exactly what analysis they want: the panel (which detector carries which
-marker), the gating strategy, the populations of interest, the comparisons that matter, QC
-expectations, and what the write-up should contain.
-
-That specification is **not** analysis logic in the executable sense — it is natural-language
-guidance that gets compiled into the agent's instructions (``prompt.md``, which the runner
-appends to the system prompt). The agent then performs the biologist-specified analysis on
-top of the deterministic first-run. So:
-
-  * ``config.yaml`` stays analysis-free (this profile lives in its own sidecar file),
-  * the first-run script is untouched,
-  * and the biology is authored by biologists, not baked into the codebase.
-
-This module contains only labels, descriptions, and text templating — no gating computation,
-no thresholds-as-logic, no data access. It is guidance authoring, in the same category as
-``agent/prompts.py``.
-"""
+# Analysis Profile page
 
 from __future__ import annotations
 
@@ -67,8 +47,6 @@ class AnalysisProfile(BaseModel):
 
 
 # ── Seed: the biology currently hard-coded in the NK first-run, exposed for editing ─────
-# This lets a biologist SEE and TAKE OVER exactly what the software currently assumes. It is
-# descriptive guidance (labels), not the executable pipeline (which stays in firstrun/).
 def nk_seed_profile() -> AnalysisProfile:
     """Return the NK cell-therapy panel as an editable starting profile."""
     return AnalysisProfile(

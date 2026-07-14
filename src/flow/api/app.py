@@ -379,9 +379,6 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     # ------------------------------------------------------------- analysis profile
-    # The biologist-owned analysis specification (see flow.analysis_profile). Stored in its
-    # own sidecar file and compiled into prompt.md — config.yaml stays analysis-free and the
-    # first-run script is untouched. All domain vocabulary lives in the guidance module.
     @app.get("/api/projects/{pid}/analysis")
     def get_analysis(pid: str) -> dict[str, Any]:
         proj = _project_or_404(pid)
@@ -394,9 +391,6 @@ def create_app() -> FastAPI:
         return {"ok": True, "guidance_preview": compile_guidance(body)}
 
     # ------------------------------------------------------------- first-run script
-    # The deterministic first-run script is provided by the biologist (edited/uploaded on the
-    # Analysis page), saved as first_run.py in the project. The harness runs whatever is here;
-    # no analysis is hardcoded in FLOW. A new project is seeded with an editable example.
     @app.get("/api/projects/{pid}/first-run-script")
     def get_first_run_script(pid: str) -> dict[str, Any]:
         from flow.firstrun import SCRIPT_FILENAME, example_script
