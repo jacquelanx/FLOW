@@ -9,9 +9,6 @@ const ACCEPTED_FILES: { name: string; desc: string }[] = [
   { name: "flow.csv", desc: "Timepoint sheet — columns label, date." },
   { name: "alc.csv", desc: "WBC count (K/µL) over time — columns date, alc. Used for absolute counts." },
   { name: "FCS files / events.csv", desc: "A folder of FCS files, or a combined per-event table." },
-  { name: "cbc.csv", desc: "Optional per-timepoint WBC override — columns label, wbc_kul." },
-  { name: "prompt.md", desc: "Optional custom LLM prompt (added on top of the default)." },
-  { name: "true_lab_results.csv", desc: "Optional ground truth — used for evaluation only." },
 ];
 
 // Page 1: create/select a project and drag-drop the lab's files, with per-file validation.
@@ -152,8 +149,7 @@ export default function ProjectUpload({
             <section className="card">
               <h3>Upload data files</h3>
               <p className="hint">
-                Drag &amp; drop your files below. They’re validated on upload and never
-                interpreted as analysis instructions.
+                Drag &amp; drop your files below. They’re validated on upload.
               </p>
               <div
                 className={`dropzone ${drag ? "drag" : ""}`}

@@ -67,9 +67,8 @@ export default function AnalysisEditor({
       <header className="page-head">
         <h2>Analysis specification</h2>
         <p className="subtitle">
-          This is where the biology lives — and you own it; nothing biological is hard-coded in
-          the software. Two parts: the <strong>first-run script</strong> that does the actual
-          flow analysis, and the <strong>spec below</strong> (panel, populations, comparisons)
+          Here, you can specify the <strong>first-run script</strong> that does the actual
+          flow analysis as well as the <strong>spec below</strong> (panel, populations, comparisons)
           that guides how the agent interprets the results.
         </p>
       </header>
@@ -87,11 +86,8 @@ export default function AnalysisEditor({
         <h3 className="card-title">First-run script (the deterministic analysis)</h3>
         <p className="hint" style={{ marginTop: 0 }}>
           This Python script does <strong>all the flow-cytometry analysis</strong> — FLOW runs
-          it before the agent, and the agent only interprets its output. It’s <strong>yours</strong>:
-          edit it here or upload your own. Contract: it’s run as{" "}
-          <code>python first_run.py --data /data --out OUT --plots PLOTS</code>, reads your data
-          from <code>--data</code>, and writes result CSVs to <code>--out</code> (every CSV is
-          auto-loaded for the agent).
+          it before the agent, and the agent only interprets its output. You can edit the existing
+          template here or upload your own.
         </p>
         {scriptSeeded && (
           <div className="banner ok" style={{ marginBottom: 12 }}>
