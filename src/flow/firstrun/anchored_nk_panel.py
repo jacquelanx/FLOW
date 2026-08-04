@@ -1,0 +1,268 @@
+"""ANCHORED first-run template — NK cell-therapy panel with reference anchoring.
+
+What it does:
+  1. Pick a REFERENCE timepoint (pre-infusion / Baseline).
+  2. Derive ONE cutoff per marker there — from the negative population's leftmost peak and
+     first valley — calibrating to the operator's manual gating when a manual CSV is present.
+  3. LOCK the scatter + lineage cuts and TRANSFER them to every timepoint (with the
+     NK-dominant rule for engrafted samples). Composition numbers therefore come from ONE
+     deterministic anchored run — the agent interprets them, it does not recompute them.
+
+FLOW first-run contract:
+    python first_run.py --data <DATA_DIR> --out <OUT_DIR> --plots <PLOTS_DIR>
+
+Outputs written to --out (every CSV is auto-loaded into the agent's notebook):
+  * ``multilineage.csv``       — composition % per timepoint on the unified cutoff.
+  * ``unified_cutoffs.csv``    — the one cutoff per marker + how it was derived (auditable).
+  * ``composition_shift.csv``  — how each population moves across timepoints.
+  * ``compare_manual.csv``     — auto vs. manual Δ per metric (only if a manual CSV exists).
+Plus, under --plots: ``overlay_<marker>.png`` (all timepoints, shared axis, unified cut).
+
+Configuration (read from the dataset's ``metadata.json`` — changeable without touching FLOW):
+  * ``reference_timepoint``  (default "Baseline")            — D2
+  * ``anchor_mode``          ("auto" | "manual" | "negative", default "auto") — D1
+  * ``nk_dominant_frac``     (default 0.92)                  — D3
+  * ``subsample``            (default 200000 events per FCS).
+The dataset dir must contain ``fcs/`` (the FCS files) and ``metadata.json``; an optional
+``manual_gating.csv`` (or ``reference/manual_gating.csv``) enables manual calibration.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+# Make the vendored ``anchored`` package importable whether this script runs from the FLOW
+# source tree or as a standalone first_run.py placed beside the ``anchored/`` folder.
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+import pandas as pd  # noqa: E402
+
+from anchored.compare import compare, load_manual, summarize  # noqa: E402
+from anchored.fcs_io import load_xform, resolve_channels  # noqa: E402
+from anchored.flow_outputs import (  # noqa: E402
+    build_negative_anchor, histogram_overlays, write_composition_shift, write_unified_cutoffs,
+)
+from anchored.reference_anchor import build_operator_anchor, load_anchor  # noqa: E402
+from anchored.run import process_patient  # noqa: E402
+
+
+DATA_DICTIONARY = """\
+FLOW anchored first-run outputs (deterministic; the agent INTERPRETS these — it must NOT
+recompute the composition numbers; it MAY inspect unified_cutoffs.csv + the overlay plots to
+AUDIT the cutoff, and may refine a flagged timepoint in its own notebook).
+
+multilineage.csv     — one row per timepoint: population %s on the UNIFIED (anchored) cutoff.
+                       Key columns: '%B (of lymph)', '%T (of lymph)', '%NK (of lymph)',
+                       '%CD4 (of lymph)', '%CD8 (of lymph)', '%Donor NK (of lymph)',
+                       '%CAR+ (of Donor NK)', plus event counts and QC (donor_reliable, ...).
+unified_cutoffs.csv  — the single cutoff used for every marker, its channel, whether it is
+                       locked/derived, the reference timepoint, and how it was derived.
+composition_shift.csv— per population: value at each timepoint + Δ from the reference timepoint
+                       and Δ from the previous timepoint (the cellular composition SHIFT).
+compare_manual.csv   — (if a manual CSV was provided) auto vs. manual %, delta, abs_delta.
+plots/overlay_*.png  — per marker, all timepoints on a shared axis with the unified cut drawn.
+"""
+
+
+def _find_manual(data_dir: Path) -> Path | None:
+    for cand in (data_dir / "manual_gating.csv",
+                 data_dir / "reference" / "manual_gating.csv"):
+        if cand.exists():
+            return cand
+    return None
+
+
+def _load_meta(data_dir: Path) -> dict:
+    mp = data_dir / "metadata.json"
+    if mp.exists():
+        try:
+            return json.loads(mp.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _collect_fcs(data_dir: Path) -> list[Path]:
+    """Every ``.fcs`` under the dataset, regardless of how it was uploaded.
+
+    FLOW lays FCS out differently per upload path: uploaded one-by-one they land flat in the
+    project root; uploaded as a ``.zip`` they go into a subfolder named after the zip; a
+    zip literally named ``fcs.zip`` yields the canonical ``fcs/``. A mixed upload splits them
+    across both. Collecting recursively covers all of these.
+    """
+    return sorted(data_dir.rglob("*.fcs"))
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    if dst.exists():
+        return
+    try:
+        dst.symlink_to(src.resolve())
+    except OSError:
+        import shutil
+
+        shutil.copy2(src, dst)
+
+
+def _normalize_dataset(data_dir: Path, work_root: Path) -> Path:
+    """Return a patient dir the vendored pipeline can consume: ``<dir>/fcs/`` + sidecars.
+
+    The pipeline (``process_patient`` / ``build_operator_anchor`` /
+    ``build_negative_anchor``) hardcodes ``patient_dir/'fcs'``. If the dataset is already in
+    that exact layout we use it directly; otherwise we build a normalized view under the
+    writable work area — an ``fcs/`` folder of symlinks (copies as a fallback) gathering
+    EVERY ``.fcs`` found anywhere in the project, plus the sidecar CSVs and ``metadata.json``.
+    ``/data`` is read-only, so nothing is written back into the dataset.
+    """
+    all_fcs = _collect_fcs(data_dir)
+    if not all_fcs:
+        raise SystemExit(f"anchored_nk_panel: no .fcs files found under {data_dir}")
+
+    # Fast path: already exactly data_dir/fcs/*.fcs and nowhere else.
+    fcs_sub = data_dir / "fcs"
+    if all(p.parent == fcs_sub for p in all_fcs):
+        return data_dir
+
+    norm = work_root / "_dataset"
+    (norm / "fcs").mkdir(parents=True, exist_ok=True)
+    seen: set[str] = set()
+    for f in all_fcs:
+        if f.name in seen:  # de-dupe by basename across a mixed (zip + loose) upload
+            print(f"  [normalize] duplicate FCS basename ignored: {f}", flush=True)
+            continue
+        seen.add(f.name)
+        _link_or_copy(f, norm / "fcs" / f.name)
+    # Sidecar inputs the pipeline reads from the patient-dir root (loose or from a zip, both
+    # land at the project root); manual gating may also sit under reference/.
+    for name in ("metadata.json", "flow.csv", "alc.csv", "cbc.csv", "manual_gating.csv"):
+        src = data_dir / name
+        if src.exists():
+            _link_or_copy(src, norm / name)
+    ref_manual = data_dir / "reference" / "manual_gating.csv"
+    if ref_manual.exists():
+        _link_or_copy(ref_manual, norm / "manual_gating.csv")
+
+    srcs = sorted({str(p.parent) for p in all_fcs})
+    print(f"[anchored] normalized dataset: {len(seen)} FCS from {srcs} -> '{norm / 'fcs'}'",
+          flush=True)
+    return norm
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data", required=True, help="Dataset dir (fcs/, metadata.json, ...).")
+    ap.add_argument("--out", required=True, help="Where to write result CSVs.")
+    ap.add_argument("--plots", default="", help="Where to write plots.")
+    args = ap.parse_args()
+
+    data_dir = Path(args.data).resolve()
+    out_dir = Path(args.out).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = Path(args.plots).resolve() if args.plots else (out_dir / "plots")
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    meta = _load_meta(data_dir)
+    # D1/D2/D3 knobs — defaults here for now; changing them
+    # is a metadata.json edit, no FLOW code change.
+    reference_tp = str(meta.get("reference_timepoint", "Baseline"))
+    anchor_mode = str(meta.get("anchor_mode", "auto")).lower()
+    subsample = int(meta.get("subsample", 200_000))
+    ch = resolve_channels(meta)
+
+    # Normalize the dataset layout so the vendored pipeline finds the FCS files wherever the
+    # app put them (flat in the project root, in fcs/, or nested). Everything downstream uses
+    # this patient_dir instead of the raw --data dir.
+    patient_dir = _normalize_dataset(data_dir, out_dir)
+
+    manual_ref = _find_manual(patient_dir)
+    use_manual = manual_ref is not None and anchor_mode in ("auto", "manual")
+    if anchor_mode == "manual" and manual_ref is None:
+        print("anchored_nk_panel: anchor_mode='manual' but no manual_gating.csv found — "
+              "falling back to negative-population anchor.", flush=True)
+        use_manual = False
+
+    anchor_path = out_dir / "operator_anchor.json"
+
+    # ── 1. Build the anchor (the unified cutoff) ──────────────────────
+    if use_manual:
+        print(f"[anchored] calibrating reference '{reference_tp}' to manual gating "
+              f"({manual_ref})", flush=True)
+        build_operator_anchor(patient_dir, manual_ref, reference_tp=reference_tp,
+                              out_path=anchor_path, subsample=subsample)
+    else:
+        print(f"[anchored] no manual calibration — negative-population anchor at "
+              f"'{reference_tp}'", flush=True)
+        build_negative_anchor(patient_dir, ch, reference_tp, anchor_path, subsample=subsample)
+
+    # ── 2. Run pipeline once (deterministic) with the anchor ───────────────
+    process_patient(patient_dir, out_dir=out_dir,
+                    manual_ref=(manual_ref if use_manual else None),
+                    subsample=subsample, verbose=True, anchor_path=anchor_path)
+
+    meta_pid = meta.get("patient_study") or data_dir.name
+
+    # ── 3. Adapt outputs to FLOW's standard names + add the new tables ─────
+    her_multi = out_dir / f"Multilineage_SSA_{meta_pid}.csv"
+    if not her_multi.exists():
+        cands = sorted(out_dir.glob("Multilineage_SSA_*.csv"))
+        her_multi = cands[0] if cands else None
+    if her_multi is None:
+        raise SystemExit("anchored_nk_panel: no multilineage output produced")
+    multi_df = pd.read_csv(her_multi)
+    multi_df.to_csv(out_dir / "multilineage.csv", index=False)
+
+    anchor = load_anchor(anchor_path)
+    write_unified_cutoffs(anchor, out_dir)
+    write_composition_shift(multi_df, out_dir, reference_tp=reference_tp)
+
+    if use_manual:
+        man = load_manual(manual_ref)
+        cmp = compare(multi_df, man)
+        cmp.to_csv(out_dir / "compare_manual.csv", index=False)
+        summary = summarize(cmp)
+        print(f"[anchored] vs manual: MAE={summary.get('mae')} pp  "
+              f"<=5pp={summary.get('within_5pp')}%  <=10pp={summary.get('within_10pp')}%",
+              flush=True)
+
+    # ── 4. Cross-timepoint overlay plots (shared axis + unified cut) ───────
+    order = None
+    flow_csv = patient_dir / "flow.csv"
+    if flow_csv.exists():
+        try:
+            order = pd.read_csv(flow_csv)["label"].astype(str).tolist()
+        except Exception:
+            order = None
+    pairs = []
+    fcs_dir = patient_dir / "fcs"
+    if fcs_dir.is_dir():
+        for f in sorted(fcs_dir.glob("*.fcs")):
+            try:
+                df, _ = load_xform(f, subsample=subsample)
+                pairs.append((f.name, df))
+            except Exception as e:
+                print(f"  overlay: could not load {f.name}: {e}", flush=True)
+    try:
+        histogram_overlays(pairs, ch, anchor, plots_dir, order=order,
+                           hla_cut=anchor.get("donor_cut"), car_cut=anchor.get("car_cut"))
+    except Exception as e:
+        print(f"  overlay plots skipped: {e}", flush=True)
+
+    with open(out_dir / "first_run_summary.txt", "w") as f:
+        f.write(DATA_DICTIONARY)
+        f.write(f"\nReference timepoint: {reference_tp} | "
+                f"anchor: {'manual-calibrated' if use_manual else 'negative-population'} | "
+                f"samples: {len(multi_df)}\n")
+
+    print("\nFIRST_RUN_OK wrote", len(multi_df), "timepoints.")
+    print("Outputs: multilineage.csv, unified_cutoffs.csv, composition_shift.csv"
+          + (", compare_manual.csv" if use_manual else "")
+          + ", first_run_summary.txt, plots/overlay_*.png")
+
+
+if __name__ == "__main__":
+    main()

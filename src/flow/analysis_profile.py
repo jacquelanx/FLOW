@@ -84,19 +84,47 @@ def nk_seed_profile() -> AnalysisProfile:
             "Change across timepoints (map samples to dates via flow.csv)",
             "Donor NK vs Patient NK over time",
             "Peak, expansion, and persistence of the CAR+ Donor NK population",
+            "Cellular composition SHIFT across timepoints, measured on ONE unified cutoff "
+            "(see composition_shift.csv) — so a change reflects biology, not a moving cutoff",
         ],
         qc_expectations=(
             "Flag samples with few CD45+ events, low viability, or unstable acquisition; "
-            "down-weight unreliable timepoints and say which."
+            "down-weight unreliable timepoints and say which. Also EVALUATE the unified cutoff: "
+            "for each marker, check that the cutoff in unified_cutoffs.csv sits just to the "
+            "right of the negative population's leftmost peak, and that the same cutoff still "
+            "separates negative from positive at every timepoint in the overlay plots."
         ),
         desired_outputs=[
             "A per-timepoint table of population % and absolute counts (K/µL)",
             "Trend plots of the key populations over time",
             "A short plain-language summary of what the data show",
+            "A brief judgement on whether the unified cutoff is reasonable, and which "
+            "timepoints (if any) would need another iteration",
         ],
-        biological_context="",
+        biological_context=(
+            "Donor CAR-NK cell therapy followed longitudinally. The engineered NK product is "
+            "expected to expand and persist after infusion, so NK% should rise over time. The "
+            "cutoffs are ANCHORED: derived once at the reference (pre-infusion) timepoint from "
+            "the negative population, then locked and transferred to every timepoint."
+        ),
         plain_language=True,
-        extra_instructions="",
+        extra_instructions=(
+            "HOW THIS ANALYSIS WORKS:\n"
+            "  • The deterministic first-run derives ONE cutoff per marker at the reference "
+            "timepoint (the negative population's leftmost peak → first valley), calibrating "
+            "to the operator's manual gating when a manual CSV is present, then LOCKS and "
+            "TRANSFERS those cutoffs to all timepoints. These composition numbers are the "
+            "authoritative, reproducible result — report them; do not re-derive per-sample "
+            "cutoffs (that reintroduces the run-to-run drift this method exists to remove).\n"
+            "  • YOUR JOB is to (1) EVALUATE the cutoff: open unified_cutoffs.csv and the "
+            "overlay_<marker>.png plots and judge whether each cutoff is derived reasonably "
+            "and holds across timepoints; (2) if a cutoff looks wrong at some timepoint, you "
+            "MAY refine it in your own notebook and show the before/after and the impact — but "
+            "flag it as a deviation rather than silently replacing the anchored headline; "
+            "(3) then INTERPRET the unified cells: describe the cellular composition shift "
+            "across timepoints (composition_shift.csv), especially NK expansion and CAR+ "
+            "persistence, and say whether another iteration on the cutoff is warranted."
+        ),
     )
 
 

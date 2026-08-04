@@ -392,14 +392,37 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------- first-run script
     @app.get("/api/projects/{pid}/first-run-script")
-    def get_first_run_script(pid: str) -> dict[str, Any]:
-        from flow.firstrun import SCRIPT_FILENAME, example_script
+    def get_first_run_script(
+        pid: str, template: str = "example", seed: bool = False
+    ) -> dict[str, Any]:
+        from flow.firstrun import SCRIPT_FILENAME, anchored_script, example_script
 
         proj = _project_or_404(pid)
         p = Path(proj["path"]) / SCRIPT_FILENAME
+        template_seed = anchored_script() if template == "anchored" else example_script()
+        # seed=1 forces the requested template's text (for the "load this template" button),
+        # even when a script is already saved.
+        if seed:
+            return {"content": template_seed, "seeded": True,
+                    "filename": SCRIPT_FILENAME, "template": template}
         if p.exists():
             return {"content": p.read_text(), "seeded": False, "filename": SCRIPT_FILENAME}
-        return {"content": example_script(), "seeded": True, "filename": SCRIPT_FILENAME}
+        # No saved script yet — seed the editor with the requested template.
+        return {"content": template_seed, "seeded": True, "filename": SCRIPT_FILENAME,
+                "template": template}
+
+    @app.post("/api/projects/{pid}/first-run-script/anchored")
+    def use_anchored_template(pid: str) -> dict[str, Any]:
+        """Install the reference-anchoring template as this project's first_run.py.
+
+        Writes first_run.py AND copies the vendored ``anchored/`` package into the project so
+        ``import anchored`` resolves when the sandbox runs ``python /data/first_run.py``.
+        """
+        from flow.firstrun import SCRIPT_FILENAME, provision_anchored
+
+        proj = _project_or_404(pid)
+        provision_anchored(proj["path"])
+        return {"ok": True, "saved": True, "filename": SCRIPT_FILENAME, "template": "anchored"}
 
     @app.post("/api/projects/{pid}/first-run-script")
     def save_first_run_script(pid: str, body: SaveConfigBody) -> dict[str, Any]:

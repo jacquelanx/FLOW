@@ -806,3 +806,68 @@ img.plot {
   padding: 12px;
   resize: vertical;
 }
+
+/* ── First-run template picker (reference anchoring vs. per-sample) ─────────── */
+.template-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 4px 0 4px;
+}
+@media (max-width: 720px) {
+  .template-picker {
+    grid-template-columns: 1fr;
+  }
+}
+.template-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #ffffff;
+}
+/* Selected template: thicker left rule, matching the banner language. */
+.template-card.sel {
+  border-left-width: 4px;
+}
+.template-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.template-card .hint {
+  flex: 1;
+}
+.template-card button {
+  align-self: flex-start;
+  margin-top: 8px;
+}
+
+/* Collapsible "how it works" explainer. */
+details.explain {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 0.92rem;
+}
+details.explain > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+details.explain ul {
+  margin: 10px 0 2px;
+  padding-left: 20px;
+}
+details.explain li {
+  margin: 6px 0;
+}
+details.explain code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+}

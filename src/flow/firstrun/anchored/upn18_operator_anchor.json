@@ -1,0 +1,313 @@
+{
+  "transforms": {
+    "FSC-A": {
+      "type": "linear",
+      "param_t": 262144.0,
+      "param_a": 0.0
+    },
+    "FSC-H": {
+      "type": "linear",
+      "param_t": 262144.0,
+      "param_a": 0.0
+    },
+    "FSC-W": {
+      "type": "linear",
+      "param_t": 262144.0,
+      "param_a": 0.0
+    },
+    "SSC-A": {
+      "type": "linear",
+      "param_t": 262144.0,
+      "param_a": 0.0
+    },
+    "SSC-H": {
+      "type": "linear",
+      "param_t": 262144.0,
+      "param_a": 0.0
+    },
+    "SSC-W": {
+      "type": "linear",
+      "param_t": 262144.0,
+      "param_a": 0.0
+    },
+    "Alexa Fluor 488-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -3.9810717055,
+      "positive": 4.4,
+      "negative": 0.0
+    },
+    "PE-Cy5-5-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "BV421-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "BV510-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "BV605-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "BV650-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "BV711-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Qdot 800-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Alexa Fluor 647-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -31.6227766017,
+      "positive": 4.2,
+      "negative": 0.0
+    },
+    "Alexa Fluor 700-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -19.9526231497,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "APC-Cy7-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -10.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "PE-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -7.9432823472,
+      "positive": 3.85,
+      "negative": 0.0
+    },
+    "PE-Texas Red-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -25.1188643151,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "PE-Cy5-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "PE-Cy7-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -7.9432823472,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "BUV 395-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -31.6227766017,
+      "positive": 5.0,
+      "negative": 0.0
+    },
+    "UV 450 L_D-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Time": {
+      "type": "linear",
+      "param_t": 324.561,
+      "param_a": 0.212
+    },
+    "Comp-Alexa Fluor 488-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -3.9810717055,
+      "positive": 4.4,
+      "negative": 0.0
+    },
+    "Comp-PE-Cy5-5-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-BV421-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-BV510-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-BV605-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-BV650-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-BV711-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-Qdot 800-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-Alexa Fluor 647-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -31.6227766017,
+      "positive": 4.2,
+      "negative": 0.0
+    },
+    "Comp-Alexa Fluor 700-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -19.9526231497,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-APC-Cy7-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -10.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-PE-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -7.9432823472,
+      "positive": 3.85,
+      "negative": 0.0
+    },
+    "Comp-PE-Texas Red-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -25.1188643151,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-PE-Cy5-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-PE-Cy7-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -7.9432823472,
+      "positive": 4.418539922,
+      "negative": 0.0
+    },
+    "Comp-BUV 395-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -31.6227766017,
+      "positive": 5.0,
+      "negative": 0.0
+    },
+    "Comp-UV 450 L_D-A": {
+      "type": "biex",
+      "max_value": 262144.0,
+      "width": -100.0,
+      "positive": 4.418539922,
+      "negative": 0.0
+    }
+  },
+  "operator_thresholds": {
+    "cd14_max": 1755.140970629301,
+    "cd19_max": 1272.5861888949235,
+    "nk_cd3_max": 1065.372296839941,
+    "nk_cd56_min": 1360.980425316359,
+    "t_cd3_min": 1097.594065177348,
+    "donor_hla_min": 1645.8124982620009,
+    "car_af647_min": 1367.0890686784242,
+    "lympho_cd45_range": [
+      1256.5514169619378,
+      3709.5164246881227
+    ],
+    "lympho_ssc_range": [
+      0.02024291497975693,
+      0.9149797570850201
+    ],
+    "mono_cd45_range": [
+      2138.6525251076414,
+      3178.4432336028763
+    ],
+    "mono_ssc_range": [
+      0.23076923076923064,
+      0.5299145299145298
+    ]
+  },
+  "channel_markers": {
+    "BV510-A": "CD45",
+    "PE-Cy5-A": "CD14",
+    "Qdot 800-A": "CD19",
+    "APC-Cy7-A": "CD3",
+    "PE-Texas Red-A": "CD56",
+    "Alexa Fluor 488-A": "HLA",
+    "Alexa Fluor 647-A": "CAR",
+    "BV650-A": "CD16",
+    "UV 450 L/D-A": "LD"
+  }
+}

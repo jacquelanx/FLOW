@@ -33,7 +33,16 @@ flow = "flow.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-flow = ["env/kernel_server.py", "firstrun/*.py", "firstrun/first_run.R"]
+flow = [
+    "env/kernel_server.py",
+    "firstrun/*.py",
+    "firstrun/first_run.R",
+    # Anchored first-run pipeline: ship its source AND its data file. fcs_io.py reads
+    # upn18_operator_anchor.json at import time, and provision_anchored copies the whole
+    # package into a project — both need these present in the installed/built package.
+    "firstrun/anchored/*.py",
+    "firstrun/anchored/*.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

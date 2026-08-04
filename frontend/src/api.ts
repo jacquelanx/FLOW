@@ -116,8 +116,21 @@ export const api = {
   },
   async getFirstRunScript(
     pid: string,
-  ): Promise<{ content: string; seeded: boolean; filename: string }> {
-    return j(await fetch(`/api/projects/${pid}/first-run-script`));
+    template?: "example" | "anchored",
+    seed?: boolean,
+  ): Promise<{ content: string; seeded: boolean; filename: string; template?: string }> {
+    const params = new URLSearchParams();
+    if (template) params.set("template", template);
+    if (seed) params.set("seed", "1");
+    const q = params.toString() ? `?${params}` : "";
+    return j(await fetch(`/api/projects/${pid}/first-run-script${q}`));
+  },
+  async useAnchoredTemplate(
+    pid: string,
+  ): Promise<{ ok: boolean; saved: boolean; filename: string; template: string }> {
+    return j(
+      await fetch(`/api/projects/${pid}/first-run-script/anchored`, { method: "POST" }),
+    );
   },
   async saveFirstRunScript(
     pid: string,

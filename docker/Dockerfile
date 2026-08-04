@@ -12,7 +12,10 @@ FROM python:3.11-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     MPLBACKEND=Agg \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    # Put the baked first-run scaffold on the path so the anchored template's
+    # `import anchored` resolves in-container even when a project hasn't vendored its own copy.
+    PYTHONPATH=/flow/firstrun
 
 # --- System + R/Bioconductor toolchain --------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \

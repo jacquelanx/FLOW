@@ -22,6 +22,19 @@ export default function AnalysisEditor({
   const [script, setScript] = useState<string>("");
   const [scriptSeeded, setScriptSeeded] = useState(false);
   const [scriptSaved, setScriptSaved] = useState<boolean | null>(null);
+  const [activeTemplate, setActiveTemplate] = useState<
+    "anchored" | "example" | "custom" | null
+  >(null);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateMsg, setTemplateMsg] = useState<string | null>(null);
+
+  // Recognize which template a script is, so the picker can highlight it.
+  function detectTemplate(content: string): "anchored" | "example" | "custom" | null {
+    if (content.includes("unified_cutoffs.csv") || content.includes("reference anchoring"))
+      return "anchored";
+    if (content.includes("first_run_results.csv")) return "example";
+    return content.trim() ? "custom" : null;
+  }
 
   useEffect(() => {
     api.getAnalysis(projectId).then((r) => {
@@ -32,6 +45,7 @@ export default function AnalysisEditor({
     api.getFirstRunScript(projectId).then((r) => {
       setScript(r.content);
       setScriptSeeded(r.seeded);
+      setActiveTemplate(detectTemplate(r.content));
     });
   }, [projectId]);
 
@@ -39,6 +53,44 @@ export default function AnalysisEditor({
     const r = await api.saveFirstRunScript(projectId, script);
     setScriptSaved(r.ok);
     if (r.ok) setScriptSeeded(false);
+  }
+
+  // Install the reference-anchoring template (writes first_run.py AND copies the analysis
+  // package the script depends on, so the sandbox can import it).
+  async function chooseAnchored() {
+    setTemplateBusy(true);
+    setTemplateMsg(null);
+    try {
+      await api.useAnchoredTemplate(projectId);
+      const r = await api.getFirstRunScript(projectId);
+      setScript(r.content);
+      setScriptSeeded(false);
+      setScriptSaved(true);
+      setActiveTemplate("anchored");
+      setTemplateMsg(
+        "Reference-anchoring template installed (the script and its analysis package). " +
+          "Review it below — it's already saved, so edit and re-Save only if you change it.",
+      );
+    } catch (e: any) {
+      setTemplateMsg(`Could not install the anchored template: ${e.message}`);
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
+
+  // Load the basic per-sample example into the editor (not yet saved).
+  async function loadExample() {
+    setTemplateBusy(true);
+    setTemplateMsg(null);
+    try {
+      const r = await api.getFirstRunScript(projectId, "example", true);
+      setScript(r.content);
+      setScriptSaved(null);
+      setActiveTemplate("example");
+      setTemplateMsg("Per-sample example loaded into the editor — edit it, then Save to use it.");
+    } finally {
+      setTemplateBusy(false);
+    }
   }
 
   if (!p) return <p className="muted">Loading…</p>;
@@ -82,9 +134,87 @@ export default function AnalysisEditor({
         <h3 className="card-title">First-run script (the deterministic analysis)</h3>
         <p className="hint" style={{ marginTop: 0 }}>
           This Python script does <strong>all the flow-cytometry analysis</strong> — FLOW runs
-          it before the agent, and the agent only interprets its output. You can edit the existing
-          template here or upload your own.
+          it before the agent, and the agent only interprets its output. Pick a starting
+          template below, edit it to match your assay, then Save (or upload your own).
         </p>
+
+        {/* Template picker — reference anchoring vs. per-sample */}
+        <div className="template-picker">
+          <div className={`template-card ${activeTemplate === "anchored" ? "sel" : ""}`}>
+            <div className="template-head">
+              <strong>Reference anchoring</strong>
+              <span className="badge ok">recommended</span>
+              {activeTemplate === "anchored" && <span className="badge">in use</span>}
+            </div>
+            <p className="hint" style={{ marginTop: 6 }}>
+              One cutoff per marker, derived once at a reference (pre-infusion) timepoint from the
+              negative population, then <strong>locked and transferred to every timepoint</strong>.
+              Composition numbers come from a single deterministic run, so they don’t drift
+              between timepoints.
+            </p>
+            <button className="secondary" onClick={chooseAnchored} disabled={templateBusy}>
+              {templateBusy ? <span className="spinner" /> : "Use reference anchoring"}
+            </button>
+          </div>
+          <div className={`template-card ${activeTemplate === "example" ? "sel" : ""}`}>
+            <div className="template-head">
+              <strong>Per-sample (basic)</strong>
+              {activeTemplate === "example" && <span className="badge">in use</span>}
+            </div>
+            <p className="hint" style={{ marginTop: 6 }}>
+              Finds a fresh cutoff on every sample independently. Simpler, but cutoffs drift
+              between timepoints — not recommended.
+            </p>
+            <button className="ghost" onClick={loadExample} disabled={templateBusy}>
+              Load per-sample example
+            </button>
+          </div>
+        </div>
+
+        {templateMsg && (
+          <div className="banner ok" style={{ marginTop: 12 }}>
+            {templateMsg}
+          </div>
+        )}
+
+        {/* How anchoring works + the knobs that need the mentor's sign-off */}
+        <details className="explain" style={{ marginTop: 12 }}>
+          <summary>How reference anchoring works &amp; what’s configurable</summary>
+          <ul>
+            <li>
+              <strong>Anchor once, transfer everywhere.</strong> The reference timepoint’s
+              negative population (leftmost peak → first valley) sets one cutoff per marker;
+              those cutoffs are locked and reused at every timepoint (with an NK-dominant rule
+              so late, engrafted samples aren’t under-called).
+            </li>
+            <li>
+              <strong>The agent’s role.</strong> It <em>evaluates</em> whether the unified cutoff
+              is reasonable and holds across timepoints, then <em>interprets</em> the cellular
+              composition shift. It does not recompute the headline numbers, and it can refine a
+              flagged cutoff in its own notebook.
+            </li>
+            <li>
+              <strong>Outputs.</strong> <code>multilineage.csv</code>,{" "}
+              <code>unified_cutoffs.csv</code>, <code>composition_shift.csv</code>, and{" "}
+              <code>overlay_&lt;marker&gt;.png</code> (all timepoints on a shared axis with the
+              unified cutoff drawn).
+            </li>
+            <li>
+              <strong>Set in the dataset’s <code>metadata.json</code></strong> (changeable any
+              time — defaults are provisional):
+              <ul>
+                <li><code>reference_timepoint</code> — default <code>"Baseline"</code></li>
+                <li>
+                  <code>anchor_mode</code> — <code>"auto"</code> (calibrate to a
+                  <code>manual_gating.csv</code> if present, else negative-population) |{" "}
+                  <code>"manual"</code> | <code>"negative"</code>
+                </li>
+                <li><code>nk_dominant_frac</code> — default <code>0.92</code></li>
+              </ul>
+            </li>
+          </ul>
+        </details>
+
         {scriptSeeded && (
           <div className="banner ok" style={{ marginBottom: 12 }}>
             <strong>Example loaded.</strong> This is a worked NK-panel script as a starting point —

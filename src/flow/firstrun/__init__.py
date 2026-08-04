@@ -30,6 +30,12 @@ SCRIPT_FILENAME = "first_run.py"
 CONTAINER_SCRIPT = "/data/first_run.py"
 # Starting template offered in the editor (never executed by the harness)
 EXAMPLE_TEMPLATE = FIRSTRUN_DIR / "example_nk_panel.py"
+# Anchored template: the reference-anchoring pipeline (one deterministic cutoff per
+# marker, locked at a reference timepoint and transferred across all timepoints). It depends
+# on the vendored ``anchored/`` package, which ``provision_anchored`` copies next to the
+# saved first_run.py so ``import anchored`` resolves inside the sandbox.
+ANCHORED_TEMPLATE = FIRSTRUN_DIR / "anchored_nk_panel.py"
+ANCHORED_PACKAGE = FIRSTRUN_DIR / "anchored"
 
 
 @dataclass
@@ -52,6 +58,36 @@ def example_script() -> str:
         return EXAMPLE_TEMPLATE.read_text()
     except OSError:
         return ""
+
+
+def anchored_script() -> str:
+    """The anchored (reference-anchoring) first-run template, for seeding the editor."""
+    try:
+        return ANCHORED_TEMPLATE.read_text()
+    except OSError:
+        return ""
+
+
+def provision_anchored(project_dir: str | Path) -> Path:
+    """Install the anchored template as this project's ``first_run.py`` + its dependency.
+
+    Writes ``<project>/first_run.py`` (the anchored entry point) and copies the vendored
+    ``anchored/`` package to ``<project>/anchored`` so ``import anchored`` works when the
+    sandbox runs ``python /data/first_run.py``. Returns the first_run.py path.
+    """
+    import shutil
+
+    project_dir = Path(project_dir)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / SCRIPT_FILENAME).write_text(ANCHORED_TEMPLATE.read_text())
+    dest_pkg = project_dir / "anchored"
+    if dest_pkg.exists():
+        shutil.rmtree(dest_pkg)
+    shutil.copytree(
+        ANCHORED_PACKAGE, dest_pkg,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    return project_dir / SCRIPT_FILENAME
 
 
 def _seed_cell() -> str:
@@ -98,15 +134,20 @@ PROMPT_NOTE = (
     "opening cell and produced the result tables shown above. They are loaded into the "
     "`first_run_tables` dict, and each is also a variable named after its CSV; their exact "
     "columns are printed above — USE THOSE EXACT NAMES, do not guess.\n\n"
-    "YOUR ROLE IS INTERPRETIVE — the analysis is ALREADY DONE. Do NOT recompute it from the "
-    "raw data; read and interpret these tables to answer the question:\n"
+    "YOUR ROLE IS INTERPRETIVE — the heavy analysis is ALREADY DONE, ONCE, deterministically. "
+    "The headline numbers are the first-run's; report them from these tables — do NOT replace "
+    "them with your own re-derivation:\n"
     "  • If the tables include QC columns/flags, start there and note any unreliable samples, "
     "then down-weight or exclude them (and say which).\n"
-    "  • Base every number on these tables; do not use raw event counts.\n"
+    "  • Base every reported number on these tables; do not use raw event counts.\n"
+    "  • You MAY inspect the first-run's parameters (e.g. any cutoffs it records) and the raw "
+    "data to AUDIT its choices. If a choice looks wrong, refine it in a cell, show the "
+    "before/after, and clearly flag the discrepancy — but keep the first-run tables as the "
+    "authoritative headline unless you have strong evidence to override a specific value.\n"
     "  • Follow the analysis specification in the additional guidance below (the panel, the "
     "populations of interest, and the comparisons the lab wants).\n"
-    "  • Any NEW number you report must be computed in a cell from these tables. Submit a "
-    "clear, evidence-backed conclusion."
+    "  • Any NEW number you report must be computed in a cell. Submit a clear, evidence-backed "
+    "conclusion."
 )
 
 
