@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
 """
-Adaptive gating — FSA × SSA FIRST.
+Adaptive gating — hierarchical, literature-aligned.
 
-Hierarchy
----------
-  1. Lymphocytes   FSC-A × SSC-A   (debris / granulocyte removal)  ← FIRST
-                   + purity-guided SSC refine (max B+T+NK / CD14-)
-  2. Singlets      FSC-A vs FSC-H
-  3. Live          UV L/D-
-  4. CD45+         BV510
-  5. CD14+/−       monocytes (CD14+) reported; lymph = CD14-
-  6. CD19+/-       B vs non-B
-  7. CD3 × CD56    T / NK
-  8. CD4 / CD8     within T (CD8 falls back to CD4− if unimodal)
-  9. Donor HLA     AF488  (allele + polarity from metadata)
- 10. CAR+          AF647 within Donor NK
+Hierarchy (biological meaning)
+------------------------------
+  1. Viable cells   FSC-A × SSC-A density island (connected high-density
+                    cellular cloud; debris excluded). UNITO Nat Commun 2025;
+                    flowDensity / OpenCyto — NOT a rectangle or quadrant.
+  2. Singlets       SSC-W × SSC-H within viable (Rico Cytometry A 2023).
+  3. Live           UV L/D− within singlets.
+  4. CD45+          Leukocytes within live.
+  5. CD14±          Monocytes (CD14+) vs lymph parent (CD45+ CD14−).
+                    Grans are CD14−/dim — lymph reporting also applies a
+                    low-SSC lymph ceiling (flowDensity / OpenCyto lymph island)
+                    so the panel-1 viable cloud stays generous while %B/T/NK
+                    use a clean lymph denominator.
+  6. CD19           B = CD19+ of CD14− lymph; non-B continue.
+  7. CD3 × CD56     T (CD3+ CD56−) vs NK (CD3− CD56+) on CD19−.
+  8. CD4 / CD8      within T (CD8 := CD4− when CD8 unimodal).
+  9. Donor HLA / CAR within NK.
+
+Lymph denominator for B/T/NK/Donor = CD45+ CD14− ∩ low-SSC lymph island.
 """
 from __future__ import annotations
 
 import numpy as np
 from sklearn.mixture import GaussianMixture
+from scipy.ndimage import gaussian_filter, label as nd_label
 
 from .fcs_io import CH_OPT
 
@@ -195,6 +202,44 @@ def robust_cd19_cut(vals):
     return pct_cut(vals, 98)
 
 
+def robust_cd14_cut(vals, ssca=None, max_frac=0.40):
+    """CD14 monocyte cut within CD45+.
+
+    Prefer a GMM / asinh valley so CD14− lymph denom stays clean. When SSC is
+    available, seed the cut from the mid/high-SSC monocyte cloud (grans are
+    CD14−/dim — fluorescence alone cannot drop them).
+    """
+    vals = np.asarray(vals, float)
+    ok = np.isfinite(vals)
+    if ok.sum() < 100:
+        return None
+
+    seed = vals[ok]
+    if ssca is not None:
+        ssca = np.asarray(ssca, float)
+        mid = ok & np.isfinite(ssca) & (ssca >= 0.12)
+        if mid.sum() >= 200:
+            seed = vals[mid]
+
+    v = gmm_valley(seed, min_gap=80, min_n=300)
+    if v is not None:
+        frac = float(np.mean(vals[ok] > v))
+        if 0.01 <= frac <= max_frac:
+            return float(v)
+
+    v2 = valley_asinh(seed, lo=55, hi=99.0)
+    if v2 is not None:
+        frac = float(np.mean(vals[ok] > v2))
+        if 0.01 <= frac <= max_frac:
+            return float(v2)
+
+    # Rare-mono fallback: high percentile of all CD45+
+    v3 = pct_cut(vals[ok], 92)
+    if v3 is not None and float(np.mean(vals[ok] > v3)) <= max_frac:
+        return float(v3)
+    return pct_cut(vals[ok], 97)
+
+
 def robust_ld_cut(vals):
     """L/D live cut; dead cells are the bright tail."""
     vals = np.asarray(vals, float)
@@ -210,19 +255,198 @@ def robust_ld_cut(vals):
     return pct_cut(vals, 90)
 
 
-# ── FSA × SSA lymphocyte gate (FIRST) ─────────────────────────────────────────
+# ── FSA × SSA lymphocyte gate (FIRST) — heat-density ──────────────────────────
 
-def lymph_scatter_gate(fsca, ssca, ssc_cap=None, fsc_lo_pct=2.0):
+def heat_density_2d(fsca, ssca, bins=220, smooth=2.2, subsample=120_000, seed=0,
+                    range_=None):
     """
-    Gate lymphocytes on FSC-A × SSC-A BEFORE any fluorescence.
+    Build a smoothed FSC×SSC heat-density grid (like a FlowJo density plot).
+    Returns H[ny,nx], xc, yc, xe, ye (bin edges).
 
-    Strategy (matches typical FlowJo lymph gate):
-      - Drop debris: FSC-A > p{fsc_lo_pct}
-      - Prefer the LOW-SSC mode via 2–3 component GMM (tight lymph core)
-      - Keep mid-FSC lymphocytes: FSC-A within the low-SSC cloud
+    range_ : optional ((xmin, xmax), (ymin, ymax)) so the grid spans a full
+    display / instrument scale instead of a tight data percentile window.
+    """
+    fsca = np.asarray(fsca, float)
+    ssca = np.asarray(ssca, float)
+    ok = np.isfinite(fsca) & np.isfinite(ssca)
+    x, y = fsca[ok], ssca[ok]
+    if len(x) < 50:
+        return None
+    if len(x) > subsample:
+        idx = np.random.RandomState(seed).choice(len(x), subsample, replace=False)
+        x, y = x[idx], y[idx]
+    H, xe, ye = np.histogram2d(x, y, bins=bins, range=range_)
+    H = gaussian_filter(H.T.astype(float), sigma=smooth)
+    xc = 0.5 * (xe[:-1] + xe[1:])
+    yc = 0.5 * (ye[:-1] + ye[1:])
+    return H, xc, yc, xe, ye
 
-    In FlowKit LinearTransform space scatter is ~0–1.
-    Returns (mask, fsc_lo, fsc_hi, ssc_hi).
+
+def _events_in_grid_mask(fsca, ssca, xe, ye, mask2d):
+    """Map events into a boolean density-grid mask."""
+    ix = np.clip(np.digitize(fsca, xe) - 1, 0, mask2d.shape[1] - 1)
+    iy = np.clip(np.digitize(ssca, ye) - 1, 0, mask2d.shape[0] - 1)
+    # digitize edges: values == xe[-1] go to len(xe); clip handles it
+    return mask2d[iy, ix]
+
+
+def _ssc_valley_above_peak(H, yc, peak_iy, peak_ix, search_half=8):
+    """Find density valley on SSC above the lymph peak (toward mono/gran)."""
+    ny, nx = H.shape
+    x0 = max(0, peak_ix - search_half)
+    x1 = min(nx, peak_ix + search_half + 1)
+    profile = H[:, x0:x1].mean(axis=1)
+    # Search upward from peak for a local minimum before the next rise
+    best = None
+    for i in range(peak_iy + 2, min(ny - 2, peak_iy + max(8, ny // 3))):
+        if profile[i] <= profile[i - 1] and profile[i] <= profile[i + 1]:
+            # Prefer valleys that sit between two higher shoulders
+            left = float(np.max(profile[peak_iy:i + 1]))
+            right = float(np.max(profile[i:min(ny, i + 12)]))
+            if left > profile[i] * 1.15 and right > profile[i] * 1.05:
+                best = float(yc[i])
+                break
+    return best
+
+
+def _density_lymph_peak(fsca, ssca, fsc_lo_pct=2.0):
+    """Locate the low-SSC lymph density peak. Returns dens grid + peak info or None."""
+    from scipy.ndimage import maximum_filter
+
+    fsca = np.asarray(fsca, float)
+    ssca = np.asarray(ssca, float)
+    dens = heat_density_2d(fsca, ssca)
+    if dens is None:
+        return None
+    H, xc, yc, xe, ye = dens
+    ny, nx = H.shape
+    ok = np.isfinite(fsca) & np.isfinite(ssca)
+    Xc, Yc = np.meshgrid(xc, yc)
+
+    fsc_lo_seed = max(float(np.percentile(fsca[ok], max(fsc_lo_pct, 5))), 0.10)
+    fsc_hi_seed = float(np.percentile(fsca[ok], 95))
+    ssc_hi_search = max(0.30, float(np.percentile(ssca[ok], 70)))
+    search = (
+        (Yc >= 0.045) & (Yc <= ssc_hi_search)
+        & (Xc >= fsc_lo_seed) & (Xc <= fsc_hi_seed)
+        & (H > 0)
+    )
+    if not search.any():
+        search = (Yc >= 0.03) & (Yc <= ssc_hi_search) & (H > 0)
+
+    Hr = np.where(search, H, 0.0)
+    if Hr.max() <= 0:
+        return None
+
+    footprint = max(9, min(ny, nx) // 22)
+    if footprint % 2 == 0:
+        footprint += 1
+    local_max = (Hr == maximum_filter(Hr, size=footprint)) & (Hr > 0)
+    candidates = []
+    cell_mass = float(Hr.sum()) + 1e-12
+    for iy, ix in np.argwhere(local_max):
+        fx, sy = float(xc[ix]), float(yc[iy])
+        if sy < 0.045 or fx < fsc_lo_seed:
+            continue
+        y0, y1 = max(0, iy - footprint), min(ny, iy + footprint + 1)
+        x0, x1 = max(0, ix - footprint), min(nx, ix + footprint + 1)
+        mass = float(Hr[y0:y1, x0:x1].sum())
+        if mass < 0.005 * cell_mass:
+            continue
+        score = mass * (0.35 + fx) / (1.0 + 6.0 * max(0.0, sy - 0.05))
+        candidates.append((score, mass, iy, ix, float(Hr[iy, ix]), fx, sy))
+
+    if not candidates:
+        peak_iy, peak_ix = np.unravel_index(np.argmax(Hr), Hr.shape)
+        peak_val = float(Hr[peak_iy, peak_ix])
+    else:
+        off_wall = [c for c in candidates if c[5] >= fsc_lo_seed + 0.08]
+        pool = off_wall or candidates
+        lymph_like = [c for c in pool if c[6] <= 0.20]
+        pool = lymph_like or pool
+        pool.sort(reverse=True)
+        _, _, peak_iy, peak_ix, peak_val, _, _ = pool[0]
+
+    return dict(
+        H=H, xc=xc, yc=yc, xe=xe, ye=ye, Xc=Xc, Yc=Yc, ok=ok,
+        peak_iy=peak_iy, peak_ix=peak_ix, peak_val=peak_val,
+        peak_ssc=float(yc[peak_iy]), peak_fsc=float(xc[peak_ix]),
+        fsc_lo_seed=fsc_lo_seed, fsc_hi_seed=fsc_hi_seed,
+    )
+
+
+def _bbox_from_mask(fsca, ssca, mask, fallback=(0.05, 0.95, 0.32)):
+    """Descriptive extents of a density island (metadata only — not the gate)."""
+    if mask is None or not np.any(mask):
+        return fallback
+    x = np.asarray(fsca, float)[mask]
+    y = np.asarray(ssca, float)[mask]
+    if len(x) < 20:
+        return fallback
+    flo = float(np.percentile(x, 1))
+    fhi = float(np.percentile(x, 99))
+    shi = float(np.percentile(y, 99))
+    return flo, fhi, shi
+
+
+def _connected_density_island(H, xe, ye, Xc, Yc, seed_iy, seed_ix, level,
+                              *, ssc_lo=0.02, ssc_hi=None, fsc_lo=None,
+                              merge_mass_frac=0.12, max_extra=2):
+    """Threshold density → connected component(s) seeded at the cellular peak.
+
+    Returns boolean grid mask. Never a rectangle: the gate follows the contour.
+    """
+    core = (H >= level) & (Yc >= ssc_lo) & np.isfinite(H)
+    if ssc_hi is not None:
+        core &= (Yc <= float(ssc_hi))
+    if fsc_lo is not None:
+        core &= (Xc >= float(fsc_lo))
+    if not core.any():
+        return core
+
+    labeled, nlab = nd_label(core)
+    lab = int(labeled[seed_iy, seed_ix])
+    if lab <= 0:
+        # Seed fell just outside — take nearest labeled cell, else largest
+        iy, ix = np.unravel_index(np.argmax(np.where(core, H, 0.0)), H.shape)
+        lab = int(labeled[iy, ix])
+    if lab <= 0:
+        return core
+
+    island = labeled == lab
+    main_mass = float(H[island].sum()) + 1e-12
+    if merge_mass_frac > 0 and nlab > 1 and max_extra > 0:
+        extras = []
+        for k in range(1, nlab + 1):
+            if k == lab:
+                continue
+            comp = labeled == k
+            mass = float(H[comp].sum())
+            if mass < merge_mass_frac * main_mass:
+                continue
+            cy = float(np.average(Yc[comp], weights=H[comp] + 1e-12))
+            cx = float(np.average(Xc[comp], weights=H[comp] + 1e-12))
+            # Only merge other cellular clouds (not debris floor)
+            if cx < 0.06 or cy < ssc_lo:
+                continue
+            if ssc_hi is not None and cy > float(ssc_hi):
+                continue
+            extras.append((mass, k))
+        extras.sort(reverse=True)
+        for _, k in extras[:max_extra]:
+            island |= (labeled == k)
+    return island
+
+
+def lymph_scatter_gate(fsca, ssca, ssc_cap=None, fsc_lo_pct=2.0,
+                       density_frac=0.22):
+    """
+    Gate *lymphocytes* on FSC-A × SSC-A as a density island (UNITO / flowDensity).
+
+    Build 2D heat density → threshold → connected component around the low-SSC
+    lymph peak. SSC stops at the density valley toward monocytes (≤0.32).
+    Returns (mask, fsc_lo, fsc_hi, ssc_hi) where flo/fhi/shi are descriptive
+    extents of the island (soft-lock metadata), not a rectangle gate.
     """
     fsca = np.asarray(fsca, float)
     ssca = np.asarray(ssca, float)
@@ -230,95 +454,236 @@ def lymph_scatter_gate(fsca, ssca, ssc_cap=None, fsc_lo_pct=2.0):
     if n < 50:
         return np.ones(n, bool), 0.0, 1.0, 1.0
 
-    fsc_lo = float(np.percentile(fsca, fsc_lo_pct))
-    non_debris = fsca > fsc_lo
-    ssc_nd = ssca[non_debris]
-    fsc_nd = fsca[non_debris]
+    peak = _density_lymph_peak(fsca, ssca, fsc_lo_pct=fsc_lo_pct)
+    if peak is None:
+        flo = float(np.percentile(fsca, fsc_lo_pct))
+        shi = float(np.percentile(ssca, 35))
+        fhi = float(np.percentile(fsca, 90))
+        # Last-resort fallback still prefers a soft density-like band, not quads
+        dens = heat_density_2d(fsca, ssca)
+        if dens is None:
+            mask = (fsca > flo) & (fsca < fhi) & (ssca < shi) & (ssca > 0.02)
+            return mask, flo, fhi, shi
+        H, xc, yc, xe, ye = dens
+        ok = np.isfinite(fsca) & np.isfinite(ssca)
+        level = max(float(H.max()) * 0.25, 1e-9)
+        Xc, Yc = np.meshgrid(xc, yc)
+        core = (H >= level) & (Yc <= shi) & (Yc >= 0.02) & (Xc >= flo * 0.8)
+        labeled, _ = nd_label(core)
+        iy, ix = np.unravel_index(np.argmax(np.where(core, H, 0.0)), H.shape)
+        lab = int(labeled[iy, ix])
+        island = labeled == lab if lab > 0 else core
+        mask = _events_in_grid_mask(fsca, ssca, xe, ye, island) & ok
+        return mask, *_bbox_from_mask(fsca, ssca, mask, (flo, fhi, shi))
+
+    H, xc, yc, xe, ye = peak["H"], peak["xc"], peak["yc"], peak["xe"], peak["ye"]
+    Xc, Yc, ok = peak["Xc"], peak["Yc"], peak["ok"]
+    peak_iy, peak_ix = peak["peak_iy"], peak["peak_ix"]
+    peak_val, peak_ssc = peak["peak_val"], peak["peak_ssc"]
+    ny, nx = H.shape
+    debris_fsc = max(0.04, float(peak["fsc_lo_seed"]) * 0.7)
+
+    x0b = max(0, peak_ix - 6)
+    x1b = min(nx, peak_ix + 7)
+    profile = H[:, x0b:x1b].mean(axis=1)
+
     ssc_hi = None
-    fsc_hi = None
-
-    # 2D GMM on FSC×SSC: take the lowest-SSC component as the lymph core,
-    # then set SSC_hi / FSC bounds from that component's distribution.
-    if non_debris.sum() >= 1500:
-        try:
-            rs = np.random.RandomState(0)
-            take = min(8000, int(non_debris.sum()))
-            ix = rs.choice(int(non_debris.sum()), take, replace=False)
-            X = np.c_[fsc_nd[ix], ssc_nd[ix]]
-            n_comp = 3 if take >= 3000 else 2
-            gm = GaussianMixture(n_comp, random_state=0, n_init=2).fit(X)
-            means = gm.means_
-            lymph_k = int(np.argmin(means[:, 1]))  # lowest SSC
-            # Bounds: component mean ± k·sqrt(cov) clipped to data
-            cov = gm.covariances_[lymph_k]
-            if cov.ndim == 2:
-                sd_fsc = float(np.sqrt(max(cov[0, 0], 1e-12)))
-                sd_ssc = float(np.sqrt(max(cov[1, 1], 1e-12)))
-            else:
-                sd_fsc = sd_ssc = float(np.sqrt(max(cov, 1e-12)))
-            mu_fsc, mu_ssc = float(means[lymph_k, 0]), float(means[lymph_k, 1])
-            # Generous enough to keep lymph, tight enough to exclude monocytes/gran
-            fsc_lo = max(fsc_lo, mu_fsc - 3.5 * sd_fsc)
-            fsc_hi = mu_fsc + 3.5 * sd_fsc
-            ssc_hi = mu_ssc + 3.0 * sd_ssc
-            # Also never exceed the valley between low and next-higher SSC mode
-            order = np.argsort(means[:, 1])
-            if len(order) >= 2:
-                lo_mu = float(means[order[0], 1])
-                hi_mu = float(means[order[1], 1])
-                if hi_mu - lo_mu > 0.03:
-                    ssc_hi = min(ssc_hi, 0.5 * (lo_mu + hi_mu))
-        except Exception:
-            ssc_hi = None
-            fsc_hi = None
-
+    valley = _ssc_valley_above_peak(H, yc, peak_iy, peak_ix, search_half=10)
+    if valley is not None and valley > peak_ssc + 0.015:
+        ssc_hi = valley
     if ssc_hi is None:
-        # 1D SSC fallback
-        if len(ssc_nd) >= 800:
-            try:
-                g1 = GaussianMixture(2, random_state=0, n_init=2).fit(ssc_nd.reshape(-1, 1))
-                order = np.argsort(g1.means_.ravel())
-                mu = g1.means_.ravel()[order]
-                if mu[1] - mu[0] > 0.04:
-                    # Bias toward the low mode (not the midpoint) — lymph gate is tight
-                    ssc_hi = float(mu[0] + 0.35 * (mu[1] - mu[0]))
-            except Exception:
-                pass
-        if ssc_hi is None:
-            ssc_hi = float(np.percentile(ssc_nd, 30)) if len(ssc_nd) else 0.5
-
+        target = peak_val * 0.20
+        for i in range(peak_iy + 1, min(ny - 1, peak_iy + ny // 2)):
+            if profile[i] <= target:
+                ssc_hi = float(yc[i])
+                break
+    if ssc_hi is None:
+        ssc_hi = peak_ssc + 0.07
+    ssc_hi = float(np.clip(ssc_hi, peak_ssc + 0.028, 0.32))
     if ssc_cap is not None:
         ssc_hi = min(ssc_hi, float(ssc_cap))
 
-    if fsc_hi is None:
-        pool = non_debris & (ssca < ssc_hi)
-        fsc_hi = float(np.percentile(fsca[pool], 97)) if pool.sum() >= 200 else float(np.percentile(fsca, 90))
+    level = peak_val * density_frac
+    island = _connected_density_island(
+        H, xe, ye, Xc, Yc, peak_iy, peak_ix, level,
+        ssc_lo=max(0.02, peak_ssc - 0.06), ssc_hi=ssc_hi, fsc_lo=debris_fsc,
+        merge_mass_frac=0.0, max_extra=0,
+    )
+    if not island.any():
+        island = _connected_density_island(
+            H, xe, ye, Xc, Yc, peak_iy, peak_ix, peak_val * 0.12,
+            ssc_lo=0.02, ssc_hi=ssc_hi, fsc_lo=debris_fsc,
+            merge_mass_frac=0.0, max_extra=0,
+        )
+    dens_mask = _events_in_grid_mask(fsca, ssca, xe, ye, island) & ok & (ssca <= ssc_hi)
+    flo, fhi, _ = _bbox_from_mask(
+        fsca, ssca, dens_mask,
+        (peak["peak_fsc"] - 0.08, peak["peak_fsc"] + 0.15, ssc_hi),
+    )
+    return dens_mask, float(flo), float(fhi), float(ssc_hi)
 
-    mask = (fsca > fsc_lo) & (fsca < fsc_hi) & (ssca < ssc_hi)
-    return mask, float(fsc_lo), float(fsc_hi), float(ssc_hi)
 
-def singlet_mask(fsca, fsch, parent):
-    """FSC-A vs FSC-H singlets within parent gate."""
-    r = fsch / np.maximum(fsca, 1e-9)
-    r_p = r[parent]
-    if r_p.size < 50:
+def viable_scatter_gate(fsca, ssca, fsc_lo_pct=2.0, density_frac=0.08):
+    """
+    Panel-1 / cleanup gate: density-island cellular cloud (lymph + mono + gran).
+
+    UNITO / flowDensity style — NOT a FSC×SSC rectangle or quadrant:
+      1) build 2D heat density on FSC-A × SSC-A
+      2) threshold at a fraction of the cellular peak
+      3) keep the connected high-density island(s), excluding debris floor
+
+    Lineage reporting still uses lymph_scatter_gate (tighter low-SSC island).
+    Returns (mask, fsc_lo, fsc_hi, ssc_hi) with flo/fhi/shi = island extents.
+    """
+    fsca = np.asarray(fsca, float)
+    ssca = np.asarray(ssca, float)
+    n = len(fsca)
+    if n < 50:
+        return np.ones(n, bool), 0.0, 1.0, 1.0
+
+    ok = np.isfinite(fsca) & np.isfinite(ssca)
+    peak = _density_lymph_peak(fsca, ssca, fsc_lo_pct=fsc_lo_pct)
+    if peak is None:
+        dens = heat_density_2d(fsca, ssca)
+        if dens is None:
+            flo = max(0.04, float(np.percentile(fsca[ok], fsc_lo_pct)))
+            fhi = float(np.percentile(fsca[ok], 99))
+            shi = min(0.80, float(np.percentile(ssca[ok], 97)))
+            mask = (fsca > flo) & (fsca < fhi) & (ssca < shi) & (ssca > 0.02) & ok
+            return mask, flo, fhi, shi
+        H, xc, yc, xe, ye = dens
+        Xc, Yc = np.meshgrid(xc, yc)
+        peak_iy, peak_ix = np.unravel_index(np.argmax(H), H.shape)
+        peak_val = float(H[peak_iy, peak_ix])
+        debris_fsc = max(0.04, float(np.percentile(fsca[ok], max(fsc_lo_pct, 5))))
+    else:
+        H, xc, yc, xe, ye = peak["H"], peak["xc"], peak["yc"], peak["xe"], peak["ye"]
+        Xc, Yc = peak["Xc"], peak["Yc"]
+        peak_iy, peak_ix = peak["peak_iy"], peak["peak_ix"]
+        peak_val = peak["peak_val"]
+        debris_fsc = max(0.04, float(peak["fsc_lo_seed"]) * 0.65)
+
+    ssc_hi_cap = float(np.clip(np.percentile(ssca[ok], 98), 0.40, 0.85))
+    level = max(peak_val * density_frac, float(H[H > 0].min()) if (H > 0).any() else 1e-9)
+    island = _connected_density_island(
+        H, xe, ye, Xc, Yc, peak_iy, peak_ix, level,
+        ssc_lo=0.02, ssc_hi=ssc_hi_cap, fsc_lo=debris_fsc,
+        merge_mass_frac=0.10, max_extra=2,
+    )
+    if not island.any() or float(H[island].sum()) < 0.02 * float(H.sum() + 1e-12):
+        island = _connected_density_island(
+            H, xe, ye, Xc, Yc, peak_iy, peak_ix, peak_val * 0.05,
+            ssc_lo=0.02, ssc_hi=ssc_hi_cap, fsc_lo=debris_fsc,
+            merge_mass_frac=0.15, max_extra=3,
+        )
+    dens_mask = _events_in_grid_mask(fsca, ssca, xe, ye, island) & ok
+    flo, fhi, shi = _bbox_from_mask(
+        fsca, ssca, dens_mask, (0.05, 0.95, ssc_hi_cap))
+    return dens_mask, float(flo), float(fhi), float(shi)
+
+
+def soft_lock_scatter(fsca, ssca, locked, density_frac=0.22):
+    """
+    Soft reference transfer for *lymph* FSA×SSA (HIPC / OpenCyto-style).
+
+    Hard-locking Baseline FSC fails after engraftment when lymph FSC shifts
+    (D28 peak can sit entirely left of a Baseline lock). Literature practice
+    is hierarchical templates with data-driven gates per sample (Finak 2014
+    OpenCyto; Finak 2016 HIPC Sci Rep) plus optional reference SSC ceiling.
+
+    Policy
+    ------
+      • SSC_hi: max(locked.ssc_hi, density lymph ssc) clipped to ≤0.32
+      • Mask: density island re-estimated per file, clipped to SSC_hi
+        (NOT a hard FSC×SSC rectangle)
+      • Panel-1 viable cloud is separate (viable_scatter_gate)
+
+    Returns (mask, fsc_lo, fsc_hi, ssc_hi, meta).
+    """
+    locked = {k: float(locked[k]) for k in ("fsc_lo", "fsc_hi", "ssc_hi")}
+    dens_mask, flo, fhi, shi = lymph_scatter_gate(
+        fsca, ssca, density_frac=density_frac)
+    ssc_hi = float(np.clip(max(locked["ssc_hi"], shi), locked["ssc_hi"], 0.32))
+    # Re-estimate density island under the soft-locked SSC ceiling so the
+    # contour can expand/contract with engraftment FSC shifts.
+    dens_mask2, flo2, fhi2, shi2 = lymph_scatter_gate(
+        fsca, ssca, ssc_cap=ssc_hi, density_frac=density_frac)
+    mask = dens_mask2 & (ssca <= ssc_hi) & np.isfinite(fsca) & np.isfinite(ssca)
+    if mask.sum() < 200:
+        mask = dens_mask & (ssca <= ssc_hi) & np.isfinite(fsca) & np.isfinite(ssca)
+        flo2, fhi2 = flo, fhi
+    meta = dict(
+        mode="soft_lock_density",
+        locked_ssc_hi=locked["ssc_hi"],
+        density_ssc_hi=float(shi),
+        density_fsc=(float(flo2), float(fhi2)),
+    )
+    return mask, float(flo2), float(fhi2), float(ssc_hi), meta
+
+
+def singlet_mask(sscw, ssch, parent, n_mad=6.0, mode="percentile"):
+    """SSC-W × SSC-H singlets within parent gate.
+
+    Panel convention: width vs height on SSC (Rico et al. Cytometry A 2023;
+    Bio-Rad / ISAC doublet guidance). Doublets elevate SSC-W while SSC-H stays
+    similar — so a harsh symmetric MAD box on both axes over-rejects.
+
+    Modes
+    -----
+      percentile (default): keep W ≤ p99 of parent and H in [p0.5, p99.5]
+      mad: asymmetric MAD — looser on height, tighter on high-W only
+    """
+    if sscw is None or ssch is None:
         return parent.copy()
-    md = np.median(r_p)
-    mad = np.median(np.abs(r_p - md)) + 1e-9
-    return parent & (r > md - 4 * mad) & (r < md + 4 * mad)
+    w = np.asarray(sscw, float)
+    h = np.asarray(ssch, float)
+    n = int(parent.sum())
+    if n < 50:
+        return parent.copy()
+    wp, hp = w[parent], h[parent]
+    ok = np.isfinite(wp) & np.isfinite(hp)
+    if ok.sum() < 50:
+        return parent.copy()
+    wp, hp = wp[ok], hp[ok]
+
+    if mode == "percentile":
+        w_hi = float(np.percentile(wp, 99.0))
+        h_lo, h_hi = [float(x) for x in np.percentile(hp, [0.5, 99.5])]
+        return (
+            parent
+            & np.isfinite(w) & np.isfinite(h)
+            & (w <= w_hi)
+            & (h >= h_lo) & (h <= h_hi)
+        )
+
+    mw, mh = float(np.median(wp)), float(np.median(hp))
+    mad_w = float(np.median(np.abs(wp - mw))) + 1e-9
+    mad_h = float(np.median(np.abs(hp - mh))) + 1e-9
+    # Asymmetric: allow low-W; cap high-W; wider H band
+    return (
+        parent
+        & np.isfinite(w) & np.isfinite(h)
+        & (w > mw - (n_mad + 2.0) * mad_w) & (w < mw + n_mad * mad_w)
+        & (h > mh - (n_mad + 1.0) * mad_h) & (h < mh + (n_mad + 1.0) * mad_h)
+    )
 
 
-def refine_ssc_by_purity(fsca, fsch, ssca, g, fsc_lo, fsc_hi, ssc_hi_init,
+def refine_ssc_by_purity(fsca, sscw, ssch, ssca, g, fsc_lo, fsc_hi, ssc_hi_init,
                          t_ld=None, t_cd45=None, min_n=600, n_grid=14):
-    """Scan SSC-A to maximize lineage purity (B+T+NK of CD14-)."""
+    """Scan SSC-A to maximize lineage purity (B+T+NK of CD14-).
+
+    Keeps SSC near the density-derived lymph upper bound — does not collapse
+    onto a tiny ultra-pure island (important for engrafted / NK-dominant files).
+    """
     ssc_hi_init = float(ssc_hi_init)
-    lo = max(0.045, 0.30 * ssc_hi_init)
-    hi = max(ssc_hi_init * 1.05, lo + 0.02)
+    lo = max(0.095, 0.70 * ssc_hi_init)
+    hi = max(ssc_hi_init * 1.08, lo + 0.02)
+    hi = min(hi, 0.32)
     best_shi, best_score = ssc_hi_init, -1.0
 
     for shi in np.linspace(lo, hi, n_grid):
-        lymph = (fsca > fsc_lo) & (fsca < fsc_hi) & (ssca < shi)
-        sing = singlet_mask(fsca, fsch, lymph)
+        lymph = (fsca > fsc_lo) & (fsca < fsc_hi) & (ssca < shi) & (ssca > 0.02)
+        sing = singlet_mask(sscw, ssch, lymph)
         live = sing & (g["ld"] < t_ld) if (t_ld is not None and "ld" in g) else sing
         work = live & (g["cd45"] > t_cd45) if (t_cd45 is not None and "cd45" in g) else live
         if work.sum() < min_n or "cd3" not in g or "cd56" not in g:
@@ -326,7 +691,7 @@ def refine_ssc_by_purity(fsca, fsch, ssca, g, fsc_lo, fsc_hi, ssc_hi_init,
 
         t14 = None
         if "cd14" in g:
-            t14 = gmm_valley(g["cd14"][work]) or pct_cut(g["cd14"][work], 95)
+            t14 = robust_cd14_cut(g["cd14"][work], ssca=ssca[work])
         cd14n = work & (g["cd14"] < t14) if t14 is not None else work
         if cd14n.sum() < min_n:
             continue
@@ -349,8 +714,10 @@ def refine_ssc_by_purity(fsca, fsch, ssca, g, fsc_lo, fsc_hi, ssc_hi_init,
         nB = int((cd14n & (g["cd19"] >= t19)).sum()) if t19 is not None else 0
         nT = int((cd19n & (g["cd3"] > t3) & (g["cd56"] < t56)).sum())
         nNK = int((cd19n & (g["cd3"] < t3) & (g["cd56"] > t56)).sum())
-        purity = (nB + nT + nNK) / max(int(cd14n.sum()), 1)
-        score = purity + 0.05 * min(int(cd14n.sum()), 15000) / 15000.0
+        n_lymph = max(int(cd14n.sum()), 1)
+        purity = (nB + nT + nNK) / n_lymph
+        # Prefer purity but keep enough events (avoid tiny ultra-pure SSC)
+        score = purity + 0.18 * min(n_lymph, 20000) / 20000.0
         if score > best_score:
             best_score, best_shi = score, float(shi)
 
@@ -373,63 +740,64 @@ def file_signals(df, ch):
         if name in df.columns:
             g[opt] = df[name].values
     fsca = df["FSC-A"].values
-    fsch = df["FSC-H"].values if "FSC-H" in df.columns else fsca.copy()
     ssca = df["SSC-A"].values
-    return g, fsca, fsch, ssca
+    sscw = df["SSC-W"].values if "SSC-W" in df.columns else None
+    ssch = df["SSC-H"].values if "SSC-H" in df.columns else None
+    return g, fsca, ssca, sscw, ssch
 
 
 def file_cuts(df, ch, ssc_cap=None, refine_ssc=True, locked_scatter=None):
-    """Derive cutoffs: FSA×SSA (+purity refine) → singlet → live → CD45 → lineage.
+    """Derive cutoffs: viable → singlet → live → CD45 → CD14 → lymph-SSC → lineage.
 
-    locked_scatter: optional dict with fsc_lo/fsc_hi/ssc_hi from operator anchor
-    (Nature-style transfer — skip adaptive scatter, re-estimate fluor inside lock).
+    locked_scatter locks the *lymph reporting* SSC floor (soft-lock FSC per file).
+    Viable-cloud bounds are always re-estimated for panel-1 display/cleanup.
     """
-    g, fsca, fsch, ssca = file_signals(df, ch)
+    g, fsca, ssca, sscw, ssch = file_signals(df, ch)
+    viable, vflo, vfhi, vshi = viable_scatter_gate(fsca, ssca)
+    scatter_method = "density"
     if locked_scatter is not None:
-        fsc_lo = float(locked_scatter["fsc_lo"])
-        fsc_hi = float(locked_scatter["fsc_hi"])
-        ssc_hi = float(locked_scatter["ssc_hi"])
+        lymph, fsc_lo, fsc_hi, ssc_hi, _meta = soft_lock_scatter(
+            fsca, ssca, locked_scatter)
+        scatter_method = "soft_lock"
         if ssc_cap is not None:
             ssc_hi = min(ssc_hi, float(ssc_cap))
-        lymph = (fsca > fsc_lo) & (fsca < fsc_hi) & (ssca < ssc_hi)
-        refine_ssc = False
+            lymph, fsc_lo, fsc_hi, ssc_hi = lymph_scatter_gate(
+                fsca, ssca, ssc_cap=ssc_hi)
+        refine_ssc = True
     else:
         lymph, fsc_lo, fsc_hi, ssc_hi = lymph_scatter_gate(fsca, ssca, ssc_cap=ssc_cap)
-    sing = singlet_mask(fsca, fsch, lymph)
 
+    # Cleanup hierarchy on the *viable* cloud (UNITO/OpenCyto pre-gates)
+    sing = singlet_mask(sscw, ssch, viable)
     t_ld = robust_ld_cut(g["ld"][sing]) if "ld" in g else None
     live = sing & (g["ld"] < t_ld) if t_ld is not None else sing.copy()
     t_cd45 = robust_cd45_cut(g["cd45"][live]) if "cd45" in g else None
 
     if refine_ssc:
         ssc_hi, _ = refine_ssc_by_purity(
-            fsca, fsch, ssca, g, fsc_lo, fsc_hi, ssc_hi,
+            fsca, sscw, ssch, ssca, g, fsc_lo, fsc_hi, ssc_hi,
             t_ld=t_ld, t_cd45=t_cd45,
         )
+        if locked_scatter is not None:
+            ssc_hi = max(float(ssc_hi), float(locked_scatter["ssc_hi"]))
         if ssc_cap is not None:
             ssc_hi = min(ssc_hi, float(ssc_cap))
-        lymph = (fsca > fsc_lo) & (fsca < fsc_hi) & (ssca < ssc_hi)
-        sing = singlet_mask(fsca, fsch, lymph)
-        live = sing & (g["ld"] < t_ld) if t_ld is not None else sing.copy()
+        # Re-apply density island under refined SSC ceiling (never a rectangle)
+        lymph, fsc_lo, fsc_hi, _ = lymph_scatter_gate(fsca, ssca, ssc_cap=ssc_hi)
 
     cd45p = live & (g["cd45"] > t_cd45) if t_cd45 is not None else live.copy()
 
-    t_cd14 = gmm_valley(g["cd14"][cd45p]) if "cd14" in g else None
-    if t_cd14 is not None and "cd14" in g:
-        frac = float(np.mean(g["cd14"][cd45p] > t_cd14))
-        # Monocytes are usually a minority of CD45+; reject over-inclusive cuts
-        if not (0.01 <= frac <= 0.45):
-            t_cd14 = None
-    if t_cd14 is None and "cd14" in g and cd45p.sum() >= 100:
-        t_cd14 = valley_asinh(g["cd14"][cd45p], lo=80, hi=99.5) or pct_cut(g["cd14"][cd45p], 97)
-        if t_cd14 is not None and float(np.mean(g["cd14"][cd45p] > t_cd14)) > 0.45:
-            t_cd14 = pct_cut(g["cd14"][cd45p], 97)
-    # Cap CD14+ of live (~monocytes); engrafted samples can look CD14-dim/noisy
+    t_cd14 = None
+    if "cd14" in g and cd45p.sum() >= 100:
+        t_cd14 = robust_cd14_cut(g["cd14"][cd45p], ssca=ssca[cd45p])
     if t_cd14 is not None and "cd14" in g and live.sum() >= 200:
         frac_live = float(np.mean(g["cd14"][live] >= t_cd14))
-        if frac_live > 0.15:
-            t_cd14 = pct_cut(g["cd14"][live], 97)
-    cd14n = cd45p & (g["cd14"] < t_cd14) if t_cd14 is not None else cd45p.copy()
+        if frac_live > 0.20:
+            t_cd14 = pct_cut(g["cd14"][live], 96)
+
+    # Lymph denom = CD45+ CD14− ∩ density lymph island
+    cd14n = cd45p & lymph & (g["cd14"] < t_cd14) if t_cd14 is not None else (
+        cd45p & lymph)
 
     t_cd19 = robust_cd19_cut(g["cd19"][cd14n]) if "cd19" in g else None
     cd19n = cd14n & (g["cd19"] < t_cd19) if t_cd19 is not None else cd14n.copy()
@@ -465,35 +833,68 @@ def file_cuts(df, ch, ssc_cap=None, refine_ssc=True, locked_scatter=None):
         cd3=t_cd3, cd56=t_cd56, cd4=t_cd4, cd8=t_cd8,
         cd8_from_cd4_neg=cd8_from_cd4_neg,
         fsc_lo=fsc_lo, fsc_hi=fsc_hi, ssc_hi=ssc_hi,
+        viable_fsc_lo=vflo, viable_fsc_hi=vfhi, viable_ssc_hi=vshi,
+        scatter_method=scatter_method,
     )
 
 
 def gate_with(df, C, ch, ssc_cap=None):
-    """Apply cuts. Lymph denom = CD45+ CD14−. CD14+ monocytes reported when present."""
-    g, fsca, fsch, ssca = file_signals(df, ch)
+    """
+    Apply cuts in hierarchy order:
+      viable scatter → singlets → live → CD45+ → CD14±
+      lymph path: CD45+ CD14− ∩ lymph-SSC island → CD19 → CD3×CD56
+      mono path:  CD14+ of CD45+
 
+    Panel-1 `lymph_scatter` mask is the *viable* cellular cloud. Lymph
+    reporting SSC (`ssc_hi`) stays separate so B/T/NK % are not diluted by
+    CD14− granulocytes.
+    """
+    g, fsca, ssca, sscw, ssch = file_signals(df, ch)
+
+    # --- Viable cloud: ALWAYS density island (never reconstruct a rectangle) ---
+    viable, vflo, vfhi, vshi = viable_scatter_gate(fsca, ssca)
+
+    # --- Lymph reporting island: density / soft-lock density ---
     fsc_lo, fsc_hi, ssc_hi = C.get("fsc_lo"), C.get("fsc_hi"), C.get("ssc_hi")
-    if fsc_lo is None or fsc_hi is None or ssc_hi is None:
-        lymph, fsc_lo, fsc_hi, ssc_hi = lymph_scatter_gate(fsca, ssca, ssc_cap=ssc_cap)
-    else:
+    locked = C.get("_anchor_scatter") in ("locked", "soft_lock")
+    use_density = True
+    locked_scatter = C.get("_locked_scatter")
+    if locked_scatter is None and locked and None not in (fsc_lo, fsc_hi, ssc_hi):
+        locked_scatter = {"fsc_lo": fsc_lo, "fsc_hi": fsc_hi, "ssc_hi": ssc_hi}
+    if locked_scatter is not None:
+        lymph, fsc_lo, fsc_hi, ssc_hi, _ = soft_lock_scatter(
+            fsca, ssca, locked_scatter)
+        use_density = False
         if ssc_cap is not None:
-            ssc_hi = min(ssc_hi, float(ssc_cap))
-        lymph = (fsca > fsc_lo) & (fsca < fsc_hi) & (ssca < ssc_hi)
+            ssc_hi = min(float(ssc_hi), float(ssc_cap))
+            lymph, fsc_lo, fsc_hi, ssc_hi = lymph_scatter_gate(
+                fsca, ssca, ssc_cap=ssc_hi)
+    else:
+        cap = ssc_cap
+        if ssc_hi is not None:
+            cap = float(ssc_hi) if cap is None else min(float(ssc_hi), float(cap))
+        lymph, fsc_lo, fsc_hi, ssc_hi = lymph_scatter_gate(
+            fsca, ssca, ssc_cap=cap)
 
-    sing = singlet_mask(fsca, fsch, lymph)
+    # 2–4. Singlets → live → CD45+ on viable cloud
+    sing = singlet_mask(sscw, ssch, viable)
     live = sing & (g["ld"] < C["ld"]) if (C.get("ld") is not None and "ld" in g) else sing.copy()
     cd45p = live & (g["cd45"] > C["cd45"]) if (C.get("cd45") is not None and "cd45" in g) else live.copy()
 
+    # 5. CD14 branch within CD45+
     if C.get("cd14") is not None and "cd14" in g:
         CD14p = cd45p & (g["cd14"] >= C["cd14"])
-        cd14n = cd45p & (g["cd14"] < C["cd14"])
+        cd14n_all = cd45p & (g["cd14"] < C["cd14"])
     else:
         CD14p = np.zeros(len(df), bool)
-        cd14n = cd45p.copy()
+        cd14n_all = cd45p.copy()
 
-    mono_ssc = cd45p & (ssca >= ssc_hi) & (ssca < min(max(ssc_hi * 1.8, ssc_hi + 0.05), 0.95))
+    # Lymph denom = CD14− ∩ lymph SSC island (excludes CD14− grans)
+    cd14n = cd14n_all & lymph
+    mono_ssc = cd45p & (ssca >= float(ssc_hi)) & (
+        ssca < min(max(float(ssc_hi) * 1.8, float(ssc_hi) + 0.05), 0.95))
     mono = CD14p | mono_ssc
-    work = cd14n  # lymphocytes = CD45+ CD14−
+    work = cd14n
 
     if C.get("cd19") is not None and "cd19" in g:
         cd19n = work & (g["cd19"] < C["cd19"])
@@ -523,15 +924,23 @@ def gate_with(df, C, ch, ssc_cap=None):
         CAR = np.zeros(len(df), bool)
 
     masks = dict(
-        lymph_scatter=lymph, sing=sing, live=live, cd45p=cd45p,
+        lymph_scatter=viable,  # panel-1 shows full cellular cloud
+        lymph_report=lymph,    # low-SSC island used for B/T/NK denom
+        sing=sing, live=live, cd45p=cd45p,
         lympho=work, mono=mono, CD14p=CD14p, cd14n=cd14n, cd19n=cd19n,
         B=B, NK=NK, T=Tc, Donor=Donor, CAR=CAR,
     )
     cuts = dict(
         ld=C.get("ld"), cd45=C.get("cd45"), cd14=C.get("cd14"), cd19=C.get("cd19"),
         cd3=C.get("cd3"), cd56=C.get("cd56"), hla=C.get("hla"), car=C.get("car"),
-        fsc_lo=fsc_lo, fsc_hi=fsc_hi, ssc_hi=ssc_hi, hla_dim=hla_dim,
+        fsc_lo=fsc_lo, fsc_hi=fsc_hi, ssc_hi=ssc_hi,
+        viable_fsc_lo=vflo, viable_fsc_hi=vfhi, viable_ssc_hi=vshi,
+        hla_dim=hla_dim,
         cd8_from_cd4_neg=bool(C.get("cd8_from_cd4_neg")),
+        scatter_method=C.get("scatter_method") or (
+            "density" if use_density else "soft_lock" if locked else "density"
+        ),
+        scatter_gate="density_island",
     )
 
     if "cd4" in g and C.get("cd4") is not None:
@@ -545,7 +954,7 @@ def gate_with(df, C, ch, ssc_cap=None):
             cuts["cd8"] = None
             cuts["cd8_from_cd4_neg"] = True
 
-    return masks, g, (fsca, ssca), cuts
+    return masks, g, (fsca, ssca, sscw, ssch), cuts
 
 
 MIN_PARENT = 50
@@ -553,7 +962,7 @@ MIN_POS = 10
 
 
 def percentages(m):
-    """B/T/NK/CD4/CD8 of CD45+CD14− lymph; CD14+ of CD45+ when present."""
+    """B/T/NK/CD4/CD8 of CD45+CD14− lymph; CD14+ monocytes of CD45+ (and of live)."""
     def pc(a, b):
         return round(100.0 * a / b, 3) if b else 0.0
 
@@ -608,7 +1017,8 @@ def calibrate_patient(loaded, ch, ssc_cap=None, locked_scatter=None):
     """loaded: list of (fname, df). Median of per-file valleys."""
     perfile = {}
     keys = ["ld", "cd45", "cd14", "cd19", "cd3", "cd56", "cd4", "cd8",
-            "fsc_lo", "fsc_hi", "ssc_hi"]
+            "fsc_lo", "fsc_hi", "ssc_hi",
+            "viable_fsc_lo", "viable_fsc_hi", "viable_ssc_hi"]
     valid = {k: [] for k in keys}
     for fn, df in loaded:
         c = file_cuts(df, ch, ssc_cap=ssc_cap, locked_scatter=locked_scatter)

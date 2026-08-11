@@ -81,12 +81,15 @@ def compare(auto_df: pd.DataFrame, manual_df: pd.DataFrame) -> pd.DataFrame:
 
 def summarize(cmp: pd.DataFrame) -> dict:
     if cmp.empty:
-        return {"n": 0, "mae": None, "within_5pp": None, "within_10pp": None}
+        return {"n": 0, "mae": None, "within_5pp": None, "within_10pp": None,
+                "soft_target_ok": None}
+    w10 = float((cmp["abs_delta"] <= 10).mean())
     return {
         "n": len(cmp),
         "mae": round(float(cmp["abs_delta"].mean()), 3),
         "median_abs": round(float(cmp["abs_delta"].median()), 3),
         "within_5pp": round(100 * float((cmp["abs_delta"] <= 5).mean()), 1),
-        "within_10pp": round(100 * float((cmp["abs_delta"] <= 10).mean()), 1),
+        "within_10pp": round(100 * w10, 1),
+        "soft_target_ok": w10 >= 0.70,
         "worst": cmp.loc[cmp["abs_delta"].idxmax()].to_dict(),
     }

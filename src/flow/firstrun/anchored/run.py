@@ -29,7 +29,7 @@ from .calibrate import (
     PRE_PAT, BASE_PAT, classify_file, car_cut_from_controls,
     donor_cut, adaptive_car_from_donor, nk_hla_car, MIN_PARENT, MIN_POS,
 )
-from .qc_plots import qc_page
+from .qc_plots import write_compact_qc_report
 from .compare import compare, summarize, timepoint_from_file, load_manual
 from .report import write_report
 from .reference_anchor import (
@@ -58,8 +58,7 @@ def process_patient(
     if mp.exists():
         meta = json.loads(mp.read_text())
     pid = meta.get("patient_study") or patient_dir.name
-    # PHI-safe: never use patient name / MRN in titles or reports
-    patient_name = pid
+    patient_name = meta.get("name") or pid
     ch = resolve_channels(meta)
     polarity = (meta.get("hla_polarity") or "donor").strip().lower()
     hla_spec = meta.get("hla_specificity") or ""
@@ -201,71 +200,91 @@ def process_patient(
             print(f"        {k}: {v}", flush=True)
 
     out_csv = out_dir / f"Multilineage_SSA_{pid}.csv"
-    out_pdf = out_dir / f"QC_Report_{pid}_SSA.pdf"
-    out_html = out_dir / f"QC_Report_{pid}_SSA.html"
+    out_pdf = out_dir / f"QC_Report_{pid}.pdf"
+    out_pdf_legacy = out_dir / f"QC_Report_{pid}_SSA.pdf"
+    out_html = out_dir / f"QC_Report_{pid}.html"
+    out_html_legacy = out_dir / f"QC_Report_{pid}_SSA.html"
 
     rows = []
-    with PdfPages(out_pdf) as pdf:
-        for fn, df, ntot in loaded:
-            pf = perfile[fn]
-            C = {k: (pf[k] if pf.get(k) is not None else med.get(k)) for k in med}
-            C["cd8_from_cd4_neg"] = bool(pf.get("cd8_from_cd4_neg") or False)
-            if anchor:
-                C = apply_anchor_cuts(C, anchor, fn)
-                C = transfer_lineage_for_nk_dominant(df, C, anchor, ch)
-                C["_tp"] = timepoint_from_file(fn)
-                C = refine_timepoint_b_cd14(df, C, anchor, ch)
-                ssc_cap = None  # already locked in C
-            else:
-                ssc_cap = base_ssc
-            C["hla"] = hla_cut
-            C["car"] = car_cut
-            C["hla_dim"] = hla_dim
-            if C.get("cd3") is None or C.get("cd56") is None:
-                if verbose:
-                    print(f"  !!  {fn}: no CD3/CD56 cut — skipped", flush=True)
-                continue
-            m, g, scat, cuts = gate_with(df, C, ch, ssc_cap=ssc_cap)
-            p = percentages(m)
-            qc_page(pdf, fn, m, g, scat, cuts, p)
-
-            n_nk = int(m["NK"].sum())
-            n_donor = int(m["Donor"].sum())
-            n_car = int(m["CAR"].sum())
-            tp = timepoint_from_file(fn)
-            metrics = {k: v for k, v in p.items() if not k.endswith("_reliable")}
-            row = {
-                "file": fn,
-                "timepoint": tp,
-                "n_events": ntot,
-                **metrics,
-                "donor_marker": hla_spec,
-                "donor_reliable": p.get("donor_reliable", n_nk >= MIN_PARENT and n_donor >= MIN_POS),
-                "car_reliable": p.get("car_reliable", n_donor >= MIN_PARENT and n_car >= MIN_POS),
-                "n_scatter": int(m["lymph_scatter"].sum()),
-                "n_live": int(m["live"].sum()),
-                "n_lympho": int(m["lympho"].sum()),
-                "n_B": int(m["B"].sum()),
-                "n_T": int(m["T"].sum()),
-                "n_NK": n_nk,
-                "n_Donor": n_donor,
-                "n_CAR": n_car,
-                "ssc_hi": cuts.get("ssc_hi"),
-            }
-            if "CD4" in m:
-                row["n_CD4"] = int(m["CD4"].sum())
-                row["n_CD8"] = int(m["CD8"].sum())
-            rows.append(row)
+    retention_rows = []
+    scatter_policy = "soft_lock" if anchor else "density"
+    gate_cache = []  # defer per-TP pages until after cover/retention
+    for fn, df, ntot in loaded:
+        pf = perfile[fn]
+        C = {k: (pf[k] if pf.get(k) is not None else med.get(k)) for k in med}
+        C["cd8_from_cd4_neg"] = bool(pf.get("cd8_from_cd4_neg") or False)
+        if anchor:
+            C = apply_anchor_cuts(C, anchor, fn)
+            C = transfer_lineage_for_nk_dominant(df, C, anchor, ch)
+            C["_tp"] = timepoint_from_file(fn)
+            C = refine_timepoint_b_cd14(df, C, anchor, ch)
+            ssc_cap = None  # soft-lock already applied
+        else:
+            ssc_cap = base_ssc
+        C["hla"] = hla_cut
+        C["car"] = car_cut
+        C["hla_dim"] = hla_dim
+        if C.get("cd3") is None or C.get("cd56") is None:
             if verbose:
-                print(
-                    f"  OK  {fn}: B {p['%B (of lymph)']}%  T {p['%T (of lymph)']}%  "
-                    f"NK {p['%NK (of lymph)']}%  "
-                    f"CD14+ {p.get('%Monocytes (of live)', p.get('%CD14+ (of CD45+)', '—'))}%  "
-                    f"purity {p.get('lineage_purity', '—')}%  "
-                    f"Donor {p.get('%Donor NK (of lymph)', p.get('%Donor NK (of NK)'))}%  "
-                    f"CAR {p['%CAR+ (of Donor NK)']}%",
-                    flush=True,
-                )
+                print(f"  !!  {fn}: no CD3/CD56 cut — skipped", flush=True)
+            continue
+        m, g, scat, cuts = gate_with(df, C, ch, ssc_cap=ssc_cap)
+        p = percentages(m)
+        tp = timepoint_from_file(fn)
+        gate_cache.append((fn, tp, m, g, scat, cuts, p))
+
+        n_tot_loaded = len(df)
+        retention_rows.append({
+            "timepoint": tp or fn,
+            "n_total": ntot,
+            "lymph_pct": round(100.0 * m["lymph_scatter"].sum() / n_tot_loaded, 3),
+            "sing_pct": round(100.0 * m["sing"].sum() / n_tot_loaded, 3),
+            "live_pct": round(100.0 * m["live"].sum() / n_tot_loaded, 3),
+            "cd45_pct": round(100.0 * m["cd45p"].sum() / n_tot_loaded, 3),
+            "lympho_pct": round(100.0 * m["lympho"].sum() / n_tot_loaded, 3),
+            "purity": p.get("lineage_purity", 0),
+        })
+
+        n_nk = int(m["NK"].sum())
+        n_donor = int(m["Donor"].sum())
+        n_car = int(m["CAR"].sum())
+        metrics = {k: v for k, v in p.items() if not k.endswith("_reliable")}
+        row = {
+            "file": fn,
+            "timepoint": tp,
+            "n_events": ntot,
+            **metrics,
+            "donor_marker": hla_spec,
+            "donor_reliable": p.get("donor_reliable", n_nk >= MIN_PARENT and n_donor >= MIN_POS),
+            "car_reliable": p.get("car_reliable", n_donor >= MIN_PARENT and n_car >= MIN_POS),
+            "n_scatter": int(m["lymph_scatter"].sum()),
+            "n_live": int(m["live"].sum()),
+            "n_lympho": int(m["lympho"].sum()),
+            "n_B": int(m["B"].sum()),
+            "n_T": int(m["T"].sum()),
+            "n_NK": n_nk,
+            "n_Donor": n_donor,
+            "n_CAR": n_car,
+            "ssc_hi": cuts.get("ssc_hi"),
+            "fsc_lo": cuts.get("fsc_lo"),
+            "fsc_hi": cuts.get("fsc_hi"),
+            "scatter_method": cuts.get("scatter_method"),
+        }
+        if "CD4" in m:
+            row["n_CD4"] = int(m["CD4"].sum())
+            row["n_CD8"] = int(m["CD8"].sum())
+        rows.append(row)
+        if verbose:
+            print(
+                f"  OK  {fn}: B {p['%B (of lymph)']}%  T {p['%T (of lymph)']}%  "
+                f"NK {p['%NK (of lymph)']}%  "
+                f"CD14+ {p.get('%Monocytes (of live)', p.get('%CD14+ (of CD45+)', '—'))}%  "
+                f"purity {p.get('lineage_purity', '—')}%  "
+                f"Donor {p.get('%Donor NK (of lymph)', p.get('%Donor NK (of NK)'))}%  "
+                f"CAR {p['%CAR+ (of Donor NK)']}%  "
+                f"scat={p.get('%Lymph_scatter (of total)')}%",
+                flush=True,
+            )
 
     auto_df = pd.DataFrame(rows)
     # stable timepoint order from flow.csv if present
@@ -275,13 +294,17 @@ def process_patient(
         auto_df["_ord"] = auto_df["timepoint"].apply(
             lambda x: order.index(x) if x in order else 999)
         auto_df = auto_df.sort_values("_ord").drop(columns="_ord").reset_index(drop=True)
+        # keep retention / gate_cache in same order
+        order_map = {tp: i for i, tp in enumerate(order)}
+        retention_rows.sort(key=lambda r: order_map.get(str(r["timepoint"]), 999))
+        gate_cache.sort(key=lambda t: order_map.get(str(t[1]), 999))
 
     auto_df.to_csv(out_csv, index=False)
 
     cmp_summary = None
+    cmp = None
     cmp_path = out_dir / f"Compare_manual_{pid}.csv"
     if manual_ref is None:
-        # auto-detect
         cand = ROOT / "reference" / f"{pid}_manual_gating.csv"
         if cand.exists():
             manual_ref = cand
@@ -299,7 +322,26 @@ def process_patient(
                 print(f"        worst: {w.get('timepoint')} {w.get('metric')} "
                       f"Δ={w.get('delta')}", flush=True)
 
+    with PdfPages(out_pdf) as pdf:
+        write_compact_qc_report(
+            pdf, pid, gate_cache,
+            cmp_summary=cmp_summary, compare_df=cmp,
+            scatter_policy=scatter_policy,
+        )
+
+    # Keep legacy filenames as copies for downstream scripts
+    try:
+        import shutil
+        shutil.copy2(out_pdf, out_pdf_legacy)
+    except Exception:
+        pass
+
     write_report(auto_df, out_html, patient_name, pid, cmp_summary)
+    try:
+        import shutil
+        shutil.copy2(out_html, out_html_legacy)
+    except Exception:
+        pass
 
     if verbose:
         print(f"\n[{pid}] CSV  → {out_csv}")

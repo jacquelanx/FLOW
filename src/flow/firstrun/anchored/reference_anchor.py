@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+Nature-methods-style reference anchoring
+========================================
+
 Philosophy (mirrors published flow reference strategies):
   1. Choose a biological REFERENCE sample (Baseline / pre-infusion).
   2. Calibrate FSA×SSA + lineage + CD4/CD8 cuts so automated % match
@@ -19,8 +22,8 @@ import numpy as np
 from .fcs_io import load_xform, resolve_channels
 from .gates import (
     file_signals, lymph_scatter_gate, singlet_mask, gate_with, percentages,
-    robust_ld_cut, robust_cd45_cut, robust_cd19_cut, gmm_valley, valley_asinh,
-    pct_cut,
+    soft_lock_scatter, robust_ld_cut, robust_cd45_cut, robust_cd19_cut,
+    robust_cd14_cut, gmm_valley, valley_asinh, pct_cut,
 )
 from .compare import load_manual, timepoint_from_file
 
@@ -47,36 +50,31 @@ def _score_dict(got: dict, target: dict, weights: dict) -> float:
 
 def _prep_baseline(df, ch):
     """Precompute arrays + seed LD/CD45 for fast vectorized scoring."""
-    g, fsca, fsch, ssca = file_signals(df, ch)
+    g, fsca, ssca, sscw, ssch = file_signals(df, ch)
     _, flo0, fhi0, shi0 = lymph_scatter_gate(fsca, ssca)
-    sing0 = singlet_mask(fsca, fsch, (fsca > flo0) & (fsca < fhi0) & (ssca < shi0))
+    sing0 = singlet_mask(sscw, ssch, (fsca > flo0) & (fsca < fhi0) & (ssca < shi0))
     t_ld = robust_ld_cut(g["ld"][sing0]) if "ld" in g else None
     live0 = sing0 & (g["ld"] < t_ld) if t_ld is not None else sing0
     t_cd45 = robust_cd45_cut(g["cd45"][live0]) if "cd45" in g else None
     return dict(
-        g=g, fsca=fsca, fsch=fsch, ssca=ssca,
+        g=g, fsca=fsca, ssca=ssca, sscw=sscw, ssch=ssch,
         flo0=flo0, fhi0=fhi0, shi0=shi0,
         t_ld=t_ld, t_cd45=t_cd45,
     )
 
 
 def _lymph_parent(P, fsc_lo, fsc_hi, ssc_hi):
-    g, fsca, fsch, ssca = P["g"], P["fsca"], P["fsch"], P["ssca"]
-    lymph = (fsca > fsc_lo) & (fsca < fsc_hi) & (ssca < ssc_hi)
-    sing = singlet_mask(fsca, fsch, lymph)
+    """Lymph parent for calibration: density island under SSC ceiling."""
+    g, fsca, ssca = P["g"], P["fsca"], P["ssca"]
+    sscw, ssch = P["sscw"], P["ssch"]
+    lymph, _, _, _ = lymph_scatter_gate(fsca, ssca, ssc_cap=float(ssc_hi))
+    sing = singlet_mask(sscw, ssch, lymph)
     live = sing & (g["ld"] < P["t_ld"]) if P["t_ld"] is not None else sing
     cd45p = live & (g["cd45"] > P["t_cd45"]) if P["t_cd45"] is not None else live
-    # CD14
+    # CD14 — prefer mono-seeded cut (grans are CD14−/dim)
     t_cd14 = None
     if "cd14" in g and cd45p.sum() >= 100:
-        t_cd14 = gmm_valley(g["cd14"][cd45p])
-        if t_cd14 is not None:
-            frac = float(np.mean(g["cd14"][cd45p] > t_cd14))
-            if not (0.01 <= frac <= 0.45):
-                t_cd14 = None
-        if t_cd14 is None:
-            t_cd14 = valley_asinh(g["cd14"][cd45p], lo=80, hi=99.5) or pct_cut(
-                g["cd14"][cd45p], 97)
+        t_cd14 = robust_cd14_cut(g["cd14"][cd45p], ssca=P["ssca"][cd45p])
     cd14n = cd45p & (g["cd14"] < t_cd14) if t_cd14 is not None else cd45p
     return cd45p, cd14n, t_cd14
 
@@ -150,6 +148,11 @@ def score_params_cached(P, parent, fsc_lo, fsc_hi, ssc_hi, t_cd3, t_cd56, target
     score = _score_dict(got, target, weights)
     if got["purity"] < 70:
         score += 0.04 * (70 - got["purity"])
+    # Yield-aware: penalize tiny lymph parents (harsh SSC crush recovers % but
+    # discards cells — Finak/HIPC emphasize reproducible populations, not
+    # ultra-thin gates). Prefer ≥4k lymph events when available.
+    if n_lymph < 4000:
+        score += 0.00035 * (4000 - n_lymph)
     cuts = dict(
         ld=P["t_ld"], cd45=P["t_cd45"], cd14=t_cd14, cd19=float(t_cd19),
         cd3=float(t_cd3), cd56=float(t_cd56), cd4=t_cd4, cd8=None,
@@ -182,13 +185,15 @@ def calibrate_reference_to_manual(df, ch, target, verbose=True):
     flo0, fhi0, shi0 = P["flo0"], P["fhi0"], P["shi0"]
     g = P["g"]
 
-    # Compact but covering grid (optimized for runtime + manual fit)
+    # Compact but covering grid — prefer SSC ≥0.10 so calibration does not
+    # crush the lymph island just to shave percentage points.
     ssc_grid = np.unique(np.clip(np.r_[
-        np.linspace(max(0.08, 0.45 * shi0), max(0.18, shi0 * 1.15), 10),
-        shi0], 0.06, 0.32))
-    fsc_lo_grid = np.unique(np.clip([flo0 * 0.8, flo0, flo0 * 1.15], 0.03, 0.35))
+        np.linspace(max(0.10, 0.55 * shi0), max(0.18, shi0 * 1.15), 10),
+        shi0], 0.09, 0.32))
+    fsc_lo_grid = np.unique(np.clip(
+        [flo0 * 0.75, flo0 * 0.9, flo0, flo0 * 1.1], 0.03, 0.35))
     fsc_hi_grid = np.unique(np.clip(
-        np.linspace(max(0.38, fhi0 * 0.75), min(0.90, fhi0 * 1.15), 5), 0.3, 0.95))
+        np.linspace(max(0.35, fhi0 * 0.70), min(0.92, fhi0 * 1.20), 6), 0.28, 0.95))
 
     best = (999.0, None, None)
     n_eval = 0
@@ -243,10 +248,10 @@ def calibrate_reference_to_manual(df, ch, target, verbose=True):
                                 f"CD4/8={got['cd4_p']:.1f}/{got['cd8_p']:.1f}",
                                 flush=True,
                             )
-        # Fine SSC refine at fixed CD3/CD56
+        # Fine SSC refine at fixed CD3/CD56 — do not go below 0.10
         c0 = best[1]
-        for shi in np.linspace(max(0.07, c0["ssc_hi"] * 0.85),
-                               min(0.30, c0["ssc_hi"] * 1.2), 8):
+        for shi in np.linspace(max(0.10, c0["ssc_hi"] * 0.90),
+                               min(0.30, c0["ssc_hi"] * 1.25), 8):
             parent = _make_parent(P, c0["fsc_lo"], c0["fsc_hi"], float(shi))
             if parent is None:
                 continue
@@ -496,7 +501,8 @@ def build_operator_anchor(
         "method": (
             "Nature-methods-style reference anchoring. Baseline FSA×SSA + CD3/CD56 "
             "+ CD4 (CD8:=CD4−) are jointly calibrated to manual percentages. Scatter "
-            "is LOCKED for transfer. Donor HLA and CAR cuts are fit to longitudinal "
+            "uses soft-lock transfer (SSC floor from Baseline; FSC re-estimated per "
+            "file via density). Donor HLA and CAR cuts are fit to longitudinal "
             "manual % when available."
         ),
         "patient_study": pid,
@@ -530,14 +536,21 @@ def build_operator_anchor(
         "car_cut_mae_pp": car_mae,
         "timepoint_cuts": tp_cuts,
         "transfer_policy": {
-            "scatter": "lock",
+            "scatter": "soft_lock",
+            "scatter_detail": (
+                "Dual scatter: panel-1 viable FSC×SSC cellular cloud (UNITO/OpenCyto "
+                "pre-gate); lymph reporting SSC soft-locked from Baseline (≤0.32, "
+                "flowDensity island) with per-file FSC re-estimate. B/T/NK denom = "
+                "CD45+ CD14− ∩ lymph-SSC (grans are CD14−/dim)."
+            ),
+            "singlets": "SSC-W×SSC-H percentile (W≤p99, H[p0.5,p99.5]); Rico 2023",
             "lineage_on_reference_tp": "use_reference_cuts",
             "lineage_on_other_tp": (
-                "reestimate_inside_locked_scatter; if CD3− are mostly CD56+ "
+                "reestimate_inside_soft_locked_lymph_scatter; if CD3− are mostly CD56+ "
                 "(NK-dominant / engraftment), lock Baseline CD3/CD56"
             ),
             "cd4_cd8": "prefer_reference_cd4_with_cd8_as_cd4_neg",
-            "b_cd14": "per_timepoint_cd19_and_optional_cd14_fit_to_manual",
+            "b_cd14": "per_timepoint_cd19_and_robust_cd14_seeded_on_mid_SSC",
             "donor_car": "use_fitted_cuts_if_present",
             "donor_denominator": "of_lymph_matches_manual_d_nk_p",
         },
@@ -560,14 +573,26 @@ def load_anchor(path: str | Path) -> dict:
 
 
 def apply_anchor_cuts(perfile_cuts: dict, anchor: dict, fname: str) -> dict:
-    """Merge per-file cuts with operator anchor (lock scatter; prefer ref CD4)."""
+    """Merge per-file cuts with operator anchor.
+
+    Scatter transfer is soft-lock (OpenCyto/HIPC style): keep the file's
+    density-derived FSC from perfile_cuts; enforce SSC_hi ≥ locked floor.
+    Fluorescence still falls back to reference cuts; CD4 stays calibrated.
+    """
     locked = anchor["locked"]
     ref = anchor["reference_cuts"]
 
     C = dict(perfile_cuts)
-    C["fsc_lo"] = locked["fsc_lo"]
-    C["fsc_hi"] = locked["fsc_hi"]
-    C["ssc_hi"] = locked["ssc_hi"]
+    # Soft lock lymph SSC: never drop below operator floor; cap ≤0.32
+    if C.get("ssc_hi") is None:
+        C["ssc_hi"] = locked["ssc_hi"]
+    else:
+        C["ssc_hi"] = min(0.32, max(float(C["ssc_hi"]), float(locked["ssc_hi"])))
+    if C.get("fsc_lo") is None:
+        C["fsc_lo"] = locked["fsc_lo"]
+    if C.get("fsc_hi") is None:
+        C["fsc_hi"] = locked["fsc_hi"]
+    C["scatter_method"] = C.get("scatter_method") or "soft_lock"
 
     # Fluorescence fallbacks
     for k in ("ld", "cd45", "cd14", "cd19", "cd3", "cd56"):
@@ -581,13 +606,14 @@ def apply_anchor_cuts(perfile_cuts: dict, anchor: dict, fname: str) -> dict:
     C["cd8"] = None
     C["cd8_from_cd4_neg"] = True
 
-    # On reference TP, use full calibrated cuts
+    # On reference TP, use full calibrated fluor cuts; soft-lock still
+    # re-estimates FSC so Baseline density island isn't forced to a thin box.
     if timepoint_from_file(fname) == anchor.get("reference_timepoint"):
         for k, v in ref.items():
+            if k in ("fsc_lo", "fsc_hi", "ssc_hi"):
+                continue
             C[k] = v
-        C["fsc_lo"] = locked["fsc_lo"]
-        C["fsc_hi"] = locked["fsc_hi"]
-        C["ssc_hi"] = locked["ssc_hi"]
+        C["ssc_hi"] = min(0.32, max(float(C.get("ssc_hi") or 0), float(locked["ssc_hi"])))
         C["cd8_from_cd4_neg"] = True
         C["cd8"] = None
 
@@ -607,7 +633,7 @@ def apply_anchor_cuts(perfile_cuts: dict, anchor: dict, fname: str) -> dict:
         C["cd14"] = tc["cd14"]
         C["_cd14_fit"] = "timepoint_manual"
 
-    C["_anchor_scatter"] = "locked"
+    C["_anchor_scatter"] = "soft_lock"
     C["_anchor_id"] = anchor.get("patient_study")
     return C
 
@@ -650,31 +676,53 @@ def refine_timepoint_b_cd14(df, C, anchor, ch):
 
 def transfer_lineage_for_nk_dominant(df, C, anchor, ch, frac_thresh: float = 0.92):
     """
-    When CD3− cells are mostly CD56+ (engraftment / NK-dominant), lock the
-    Baseline-calibrated CD3/CD56 cuts. Per-file CD56 tends to climb too high
-    on late samples and under-calls NK vs manual. Mixed early samples (e.g. D7
-    with CD56-dim junk) keep per-file cuts.
+    When a file is NK-dominant / engrafted, lock Baseline-calibrated CD3/CD56.
+
+    Per-file valleys often collapse CD3 too low and inflate CD56 on late TPs,
+    which mis-labels NK as T and also breaks the old detector (it scored
+    CD56+ among CD3− using the broken per-file CD3 cut). Score dominance
+    with the *reference* CD3/CD56 cuts instead.
     """
     ref = anchor.get("reference_cuts") or {}
     if ref.get("cd3") is None or ref.get("cd56") is None:
         return C
 
-    # Lightweight parent to score CD56+ fraction among CD3−
+    t3_ref = float(ref["cd3"])
+    t56_ref = float(ref["cd56"])
+
     trial = dict(C)
     m, g, _, _ = gate_with(df, trial, ch)
-    t3 = trial.get("cd3") or ref["cd3"]
     cd19n = m.get("cd19n")
     if cd19n is None or cd19n.sum() < 200 or "cd3" not in g or "cd56" not in g:
         return C
-    cd3n = cd19n & (g["cd3"] < t3)
-    if cd3n.sum() < 80:
-        return C
-    frac = float(np.mean(g["cd56"][cd3n] > float(ref["cd56"])))
+
+    cd3 = g["cd3"]
+    cd56 = g["cd56"]
+    # CD56+ fraction among CD3− using REFERENCE CD3 (not broken per-file)
+    cd3n = cd19n & (cd3 < t3_ref)
+    frac = float(np.mean(cd56[cd3n] > t56_ref)) if cd3n.sum() >= 80 else 0.0
+    # Would-be NK / T fractions under reference cuts
+    nk_frac = float(np.mean((cd3[cd19n] < t3_ref) & (cd56[cd19n] > t56_ref)))
+    t_frac = float(np.mean((cd3[cd19n] > t3_ref) & (cd56[cd19n] < t56_ref)))
+
+    # Per-file valley often collapses on engrafted files
+    pf_cd3, pf_cd56 = C.get("cd3"), C.get("cd56")
+    perfile_broken = (
+        (pf_cd56 is not None and float(pf_cd56) > 1.5 * t56_ref)
+        or (pf_cd3 is not None and float(pf_cd3) < 0.65 * t3_ref)
+    )
+
     C = dict(C)
     C["_nk_dom_frac"] = round(frac, 3)
-    if frac >= frac_thresh:
-        C["cd3"] = float(ref["cd3"])
-        C["cd56"] = float(ref["cd56"])
+    C["_nk_ref_frac"] = round(nk_frac, 3)
+    lock = (
+        frac >= frac_thresh
+        or (nk_frac >= 0.30 and nk_frac > t_frac)
+        or (perfile_broken and nk_frac >= 0.25 and nk_frac > t_frac)
+    )
+    if lock:
+        C["cd3"] = t3_ref
+        C["cd56"] = t56_ref
         C["_lineage_transfer"] = "reference_nk_dominant"
     else:
         C["_lineage_transfer"] = "perfile_mixed"
