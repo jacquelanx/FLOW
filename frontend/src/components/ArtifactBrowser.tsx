@@ -40,6 +40,8 @@ export default function ArtifactBrowser({ runId }: { runId: string }) {
     setPreview(text.slice(0, 20000));
   }
 
+  const images = artifacts.filter((a) => a.kind === "image");
+
   return (
     <div className="page">
       <header className="page-head">
@@ -53,14 +55,45 @@ export default function ArtifactBrowser({ runId }: { runId: string }) {
       <TrajectoryPicker trajectories={trajectories} idx={idx} onChange={setIdx} />
 
       <div className="card">
-        <a href={api.downloadUrl(runId)}>
-          <button>Download run (.zip)</button>
-        </a>
+        <div className="actions" style={{ margin: 0 }}>
+          <a href={api.downloadUrl(runId)}>
+            <button>Download run (.zip)</button>
+          </a>
+          <span className="hint" style={{ margin: 0 }}>
+            One archive with every trajectory’s notebook, tables, and plots.
+          </span>
+        </div>
       </div>
 
-      <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
-        <div className="card" style={{ flex: "0 0 260px" }}>
-          <table>
+      {/* Contact sheet of the plots: the fastest way to find the figure you want. */}
+      {images.length > 0 && (
+        <section className="card">
+          <div className="card-title">
+            Plots — {images.length} figure{images.length === 1 ? "" : "s"}
+          </div>
+          <div className="thumbgrid">
+            {images.map((a) => (
+              <button
+                key={a.path}
+                className={`thumb ${selected?.path === a.path ? "sel" : ""}`}
+                title={a.path}
+                onClick={() => open(a)}
+              >
+                <img
+                  src={api.artifactUrl(runId, idx, a.path)}
+                  alt={a.name}
+                  loading="lazy"
+                />
+                <span className="thumb-name">{a.name}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <div className="artifact-split">
+        <div className="card">
+          <table className="artifact-list">
             <thead>
               <tr>
                 <th>Artifact</th>
@@ -73,12 +106,9 @@ export default function ArtifactBrowser({ runId }: { runId: string }) {
                 return (
                   <tr
                     key={a.path}
+                    className={sel ? "sel" : ""}
+                    aria-selected={sel}
                     onClick={() => open(a)}
-                    style={{
-                      cursor: "pointer",
-                      background: sel ? "var(--ink)" : undefined,
-                      color: sel ? "#fff" : undefined,
-                    }}
                   >
                     <td>{a.path}</td>
                     <td>{a.kind}</td>
@@ -87,9 +117,12 @@ export default function ArtifactBrowser({ runId }: { runId: string }) {
               })}
             </tbody>
           </table>
+          {artifacts.length === 0 && (
+            <div className="empty">No artifacts for this trajectory.</div>
+          )}
         </div>
 
-        <div className="card" style={{ flex: 1, minWidth: 0 }}>
+        <div className="card">
           {!selected && <div className="empty">Select an artifact to preview.</div>}
           {selected && selected.kind === "image" && (
             <img

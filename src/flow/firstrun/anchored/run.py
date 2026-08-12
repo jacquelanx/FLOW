@@ -26,11 +26,14 @@ from matplotlib.backends.backend_pdf import PdfPages
 from .fcs_io import load_xform, resolve_channels, has_full_panel
 from .gates import calibrate_patient, gate_with, percentages
 from .calibrate import (
-    PRE_PAT, BASE_PAT, classify_file, car_cut_from_controls,
+    classify_file, car_cut_from_controls,
     donor_cut, adaptive_car_from_donor, nk_hla_car, MIN_PARENT, MIN_POS,
 )
 from .qc_plots import write_compact_qc_report
-from .compare import compare, summarize, timepoint_from_file, load_manual
+from .compare import (
+    compare, summarize, timepoint_from_file, load_manual, is_baseline, is_pre_infusion,
+    timepoint_sort_key,
+)
 from .report import write_report
 from .reference_anchor import (
     find_anchor, load_anchor, apply_anchor_cuts, build_operator_anchor,
@@ -88,11 +91,18 @@ def process_patient(
                   f"cal MAE={anchor.get('calibration_mae_pp')} pp)", flush=True)
 
     controls = {}
+    control_src = {}
     loaded = []  # (fname, df, ntot)
+    n_comp = 0
     for f in sorted(fcs_dir.iterdir()):
         if not f.suffix.lower() == ".fcs":
             continue
         kind = classify_file(f.name)
+        if kind == "comp":
+            # Instrument compensation control: full fluorescence panel but not a specimen.
+            # Skipped before loading so it never reaches the gates or the median cuts.
+            n_comp += 1
+            continue
         try:
             df, ntot = load_xform(f, subsample=subsample)
         except Exception as e:
@@ -104,12 +114,19 @@ def process_patient(
                 print(f"  --  {f.name}: skipped (incomplete panel)", flush=True)
             continue
         if kind != "timepoint":
-            controls[kind] = df
+            # One control of each kind is used for the study-wide donor/CAR cut. When a
+            # dataset ships one per acquisition folder, say which one won.
             if verbose:
-                print(f"  [ctrl] {f.name} → {kind}", flush=True)
+                prev = control_src.get(kind)
+                note = f" (replaces {prev})" if prev else ""
+                print(f"  [ctrl] {f.name} → {kind}{note}", flush=True)
+            controls[kind] = df
+            control_src[kind] = f.name
         else:
             loaded.append((f.name, df, ntot))
 
+    if verbose and n_comp:
+        print(f"[{pid}] skipped {n_comp} compensation control file(s)", flush=True)
     if not loaded:
         raise RuntimeError(f"No timepoint FCS files found in {fcs_dir}")
 
@@ -119,7 +136,7 @@ def process_patient(
     base_ssc = locked_scatter["ssc_hi"] if locked_scatter else None
     if base_ssc is None:
         for fn, df in pairs:
-            if BASE_PAT.search(fn):
+            if is_baseline(fn):
                 from .gates import file_cuts
                 bc = file_cuts(df, ch)
                 base_ssc = bc.get("ssc_hi")
@@ -148,9 +165,9 @@ def process_patient(
     for fn, df in pairs:
         Cnk = _cuts_for_nk(fn, df)
         hla, _ = nk_hla_car(df, Cnk, ch)
-        if PRE_PAT.search(fn):
+        if is_pre_infusion(fn):
             pre_pool.append(hla)
-            if BASE_PAT.search(fn):
+            if is_baseline(fn):
                 base_pool.append(hla)
         else:
             post_pool.append(hla)
@@ -298,6 +315,15 @@ def process_patient(
         order_map = {tp: i for i, tp in enumerate(order)}
         retention_rows.sort(key=lambda r: order_map.get(str(r["timepoint"]), 999))
         gate_cache.sort(key=lambda t: order_map.get(str(t[1]), 999))
+    elif "timepoint" in auto_df.columns:
+        # No flow.csv: fall back to chronological order parsed from the labels, so
+        # "Δ from previous timepoint" downstream means what it says. Files with no
+        # timepoint keep their filename order at the end.
+        auto_df["_ord"] = auto_df["timepoint"].apply(timepoint_sort_key)
+        auto_df = auto_df.sort_values("_ord", kind="stable").drop(
+            columns="_ord").reset_index(drop=True)
+        retention_rows.sort(key=lambda r: timepoint_sort_key(r["timepoint"]))
+        gate_cache.sort(key=lambda t: timepoint_sort_key(t[1]))
 
     auto_df.to_csv(out_csv, index=False)
 

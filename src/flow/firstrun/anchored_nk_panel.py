@@ -43,6 +43,9 @@ if str(_HERE) not in sys.path:
 import pandas as pd  # noqa: E402
 
 from anchored.compare import compare, load_manual, summarize  # noqa: E402
+from anchored.manual_check import (  # noqa: E402
+    ManualGatingError, check_manual_gating, coverage_note,
+)
 from anchored.fcs_io import load_xform, resolve_channels  # noqa: E402
 from anchored.flow_outputs import (  # noqa: E402
     build_negative_anchor, histogram_overlays, write_composition_shift, write_unified_cutoffs,
@@ -109,6 +112,35 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
+def _unique_name(f: Path, data_dir: Path, seen: dict[str, Path]) -> str | None:
+    """Flat filename for ``f`` that collides with nothing already in ``seen``.
+
+    A folder-per-timepoint upload repeats basenames (``Specimen_001_Car.fcs`` in each
+    acquisition folder). Keeping only the first would silently drop most of the dataset, so
+    the source folders are folded into the name as a ``<folder>__`` prefix — the same
+    convention the app's zip extractor uses, and the one the classifier looks past. Returns
+    None when the exact same file is reached twice (mixed zip + loose upload).
+    """
+    if f.name not in seen:
+        return f.name
+    if seen[f.name].resolve() == f.resolve():
+        return None
+    try:
+        folders = list(f.relative_to(data_dir).parent.parts)
+    except ValueError:
+        folders = [f.parent.name]
+    name = f"{'-'.join(folders)}__{f.name}" if folders else f.name
+    if name in seen:
+        if seen[name].resolve() == f.resolve():
+            return None
+        stem, suffix = name[: -len(f.suffix)], f.suffix
+        n = 2
+        while f"{stem}-{n}{suffix}" in seen:
+            n += 1
+        name = f"{stem}-{n}{suffix}"
+    return name
+
+
 def _normalize_dataset(data_dir: Path, work_root: Path) -> Path:
     """Return a patient dir the vendored pipeline can consume: ``<dir>/fcs/`` + sidecars.
 
@@ -130,13 +162,14 @@ def _normalize_dataset(data_dir: Path, work_root: Path) -> Path:
 
     norm = work_root / "_dataset"
     (norm / "fcs").mkdir(parents=True, exist_ok=True)
-    seen: set[str] = set()
+    seen: dict[str, Path] = {}
     for f in all_fcs:
-        if f.name in seen:  # de-dupe by basename across a mixed (zip + loose) upload
-            print(f"  [normalize] duplicate FCS basename ignored: {f}", flush=True)
+        name = _unique_name(f, data_dir, seen)
+        if name is None:  # same file reached by two upload paths (zip + loose)
+            print(f"  [normalize] duplicate FCS ignored: {f}", flush=True)
             continue
-        seen.add(f.name)
-        _link_or_copy(f, norm / "fcs" / f.name)
+        seen[name] = f
+        _link_or_copy(f, norm / "fcs" / name)
     # Sidecar inputs the pipeline reads from the patient-dir root (loose or from a zip, both
     # land at the project root); manual gating may also sit under reference/.
     for name in ("metadata.json", "flow.csv", "alc.csv", "cbc.csv", "manual_gating.csv"):
@@ -148,8 +181,8 @@ def _normalize_dataset(data_dir: Path, work_root: Path) -> Path:
         _link_or_copy(ref_manual, norm / "manual_gating.csv")
 
     srcs = sorted({str(p.parent) for p in all_fcs})
-    print(f"[anchored] normalized dataset: {len(seen)} FCS from {srcs} -> '{norm / 'fcs'}'",
-          flush=True)
+    print(f"[anchored] normalized dataset: {len(seen)} FCS from {len(srcs)} folder(s) "
+          f"{srcs if len(srcs) <= 4 else srcs[:4] + ['...']} -> '{norm / 'fcs'}'", flush=True)
     return norm
 
 
@@ -188,6 +221,17 @@ def main() -> None:
 
     anchor_path = out_dir / "operator_anchor.json"
 
+    # ── 0. Validate the manual CSV BEFORE it steers anything ──────────
+    # A label the parser can't match is dropped silently downstream, which would report a
+    # confident MAE over whatever happened to match. Say so here instead.
+    check = None
+    if use_manual:
+        try:
+            check = check_manual_gating(manual_ref, patient_dir / "fcs", reference_tp)
+        except ManualGatingError as e:
+            raise SystemExit(f"\nanchored_nk_panel: manual gating file is unusable.\n\n{e}\n")
+        print(f"[anchored] {check.report()}", flush=True)
+
     # ── 1. Build the anchor (the unified cutoff) ──────────────────────
     if use_manual:
         print(f"[anchored] calibrating reference '{reference_tp}' to manual gating "
@@ -220,14 +264,18 @@ def main() -> None:
     write_unified_cutoffs(anchor, out_dir)
     write_composition_shift(multi_df, out_dir, reference_tp=reference_tp)
 
+    manual_note = ""
     if use_manual:
         man = load_manual(manual_ref)
         cmp = compare(multi_df, man)
         cmp.to_csv(out_dir / "compare_manual.csv", index=False)
         summary = summarize(cmp)
+        # Always qualify the MAE with its coverage — an MAE over one of twelve timepoints
+        # otherwise reads exactly like an MAE over all twelve.
+        manual_note = coverage_note(cmp, check)
         print(f"[anchored] vs manual: MAE={summary.get('mae')} pp  "
-              f"<=5pp={summary.get('within_5pp')}%  <=10pp={summary.get('within_10pp')}%",
-              flush=True)
+              f"<=5pp={summary.get('within_5pp')}%  <=10pp={summary.get('within_10pp')}%  "
+              f"({manual_note})", flush=True)
 
     # ── 4. Cross-timepoint overlay plots (shared axis + unified cut) ───────
     order = None
@@ -257,6 +305,12 @@ def main() -> None:
         f.write(f"\nReference timepoint: {reference_tp} | "
                 f"anchor: {'manual-calibrated' if use_manual else 'negative-population'} | "
                 f"samples: {len(multi_df)}\n")
+        # The agent reads this file; the MAE's coverage belongs next to the MAE, not only
+        # in the run log.
+        if check is not None:
+            f.write("\n" + check.report() + "\n")
+            if manual_note:
+                f.write(f"compare_manual.csv covers: {manual_note}\n")
 
     print("\nFIRST_RUN_OK wrote", len(multi_df), "timepoints.")
     print("Outputs: multilineage.csv, unified_cutoffs.csv, composition_shift.csv"

@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
-# Map FCS trailing token → manual timepoint label
+# Map FCS trailing token → manual timepoint label. Explicit entries win over the generic
+# parser below, so a study's manual-gating labels are always reproduced verbatim.
 TOKEN_MAP = {
     "baseline": "Baseline",
     "pre": "Pre",
@@ -22,6 +23,37 @@ TOKEN_MAP = {
     "d86": "D86",
     "d91": "D91",
 }
+
+# When FLOW flattens a nested upload it keeps each file's provenance as a
+# "<source folder>__" prefix (see the app's zip extractor). Classification and timepoint
+# parsing look past that prefix so the original filename still drives both.
+SRC_SEP = "__"
+
+# Instrument compensation controls — BD FACSDiva writes these as
+# "Compensation Controls_<fluor> Stained Control.fcs" / "..._Unstained Control.fcs", one set
+# per acquisition folder. They carry the full fluorescence panel (so a panel check passes)
+# but they are beads/single-stained tubes, not specimens.
+COMP_PAT = re.compile(
+    r"(^|[_ ])comp(ensation)?[_ ]|(^|[_ ])(un)?stained[_ ]*control", re.I)
+
+# Pre-infusion / baseline recognition. Defined here (not in calibrate.py) so the timepoint
+# parser and the file classifier share one definition; calibrate.py re-exports them.
+PRE_PAT = re.compile(r"(baseline|screen|(^|_)pre(\b|_|$))", re.I)
+BASE_PAT = re.compile(r"(baseline|screen)", re.I)
+
+# Generic timepoint tokens, tried when TOKEN_MAP has no entry.
+_DAY_PAT = re.compile(r"^d[ _-]?(\d+)$", re.I)
+_WEEK_PAT = re.compile(r"^(?:week|wk)[ _-]?(\d+)$", re.I)
+_MONTH_PAT = re.compile(r"^(?:month|mo)[ _-]?(\d+)$", re.I)
+_WORD_TPS = {
+    "baseline": "Baseline", "screen": "Screen", "screening": "Screening",
+    "pre": "Pre", "post": "Post", "infusion": "Infusion", "eos": "EOS",
+}
+_PRE_TPS = {"baseline", "screen", "screening", "pre"}
+_BASE_TPS = {"baseline", "screen", "screening"}
+# Trailing filename boilerplate that is not a specimen qualifier ("D7_Specimen_001" is the
+# D7 sample, whereas "D35_Pleural_Fluid" is a distinct specimen from that day).
+_BOILERPLATE = {"specimen", "sample", "export", "tube", "data", "fcs", "singlets", "live"}
 
 # auto column → manual column
 METRIC_MAP = {
@@ -39,11 +71,109 @@ METRIC_MAP = {
 }
 
 
+def strip_source_prefix(fname: str) -> str:
+    """Drop the ``<source folder>__`` provenance prefix FLOW adds when flattening a tree."""
+    name = Path(fname).name
+    return name.rsplit(SRC_SEP, 1)[-1] if SRC_SEP in name else name
+
+
+def is_comp_control(fname: str) -> bool:
+    """True for instrument compensation controls (single-stained / unstained tubes)."""
+    return bool(COMP_PAT.search(Path(strip_source_prefix(fname)).stem))
+
+
+def _parse_token(tok: str) -> str | None:
+    """One filename segment → canonical timepoint label, or None.
+
+    Handles the explicit TOKEN_MAP, day/week/month numbers in the usual spellings, the
+    named pre-infusion tokens, and a trailing specimen qualifier ("D35 Pleural Fluid",
+    which is a different specimen from that day's blood draw and must stay distinct).
+    """
+    tok = tok.strip()
+    if not tok:
+        return None
+    mapped = TOKEN_MAP.get(tok.lower())
+    if mapped:
+        return mapped
+    head, _, qualifier = tok.partition(" ")
+    if qualifier.strip():
+        base = _parse_token(head)
+        return f"{base} {qualifier.strip()}" if base else None
+    m = _DAY_PAT.match(tok)
+    if m:
+        return f"D{int(m.group(1))}"
+    m = _WEEK_PAT.match(tok)
+    if m:
+        return f"week{int(m.group(1))}"
+    m = _MONTH_PAT.match(tok)
+    if m:
+        return f"month{int(m.group(1))}"
+    return _WORD_TPS.get(tok.lower())
+
+
 def timepoint_from_file(fname: str) -> str | None:
-    stem = Path(fname).stem.lower()
-    # Specimen_001_Baseline → baseline
-    tok = stem.split("_")[-1]
-    return TOKEN_MAP.get(tok)
+    """Canonical timepoint label for a specimen FCS, or None if it carries no timepoint.
+
+    Segments are scanned right-to-left, so both ``Specimen_001_Baseline.fcs`` (the layout
+    this pipeline was written against) and ``UPN25_D14_PBMC.fcs`` resolve. Anything after
+    the timepoint is kept as a specimen qualifier, so ``Specimen_001_D35 Pleural Fluid.fcs``
+    stays distinct from that day's blood draw instead of colliding on "D35" — and it reads
+    the same whether or not the upload path replaced the spaces with underscores.
+
+    Compensation controls and the NT-NK / CBMC / Car product controls carry no timepoint
+    and return None.
+    """
+    if is_comp_control(fname):
+        return None
+    stem = Path(strip_source_prefix(fname)).stem
+    parts = stem.split("_")
+    for i in range(len(parts) - 1, -1, -1):
+        tp = _parse_token(parts[i])
+        if tp:
+            rest = [p.strip() for p in parts[i + 1:] if p.strip()]
+            while rest and (rest[-1].isdigit() or rest[-1].lower() in _BOILERPLATE):
+                rest.pop()
+            return f"{tp} {' '.join(rest)}" if rest else tp
+    return None
+
+
+_TP_STAGE = {"baseline": 0, "screen": 0, "screening": 0,
+             "pre": 1, "infusion": 2, "post": 3, "eos": 9}
+
+
+def timepoint_sort_key(tp: str | None):
+    """Chronological sort key for a timepoint label (weeks/months folded to days).
+
+    Only used to order rows when the project ships no ``flow.csv``; when it does, that
+    file's ``label`` order still wins.
+    """
+    if not tp or tp != tp:  # None / NaN
+        return (99, 0.0, "")
+    head, _, qualifier = str(tp).partition(" ")
+    stage = _TP_STAGE.get(head.lower())
+    if stage is not None:
+        return (stage, 0.0, qualifier)
+    for pat, scale in ((_DAY_PAT, 1.0), (_WEEK_PAT, 7.0), (_MONTH_PAT, 30.0)):
+        m = pat.match(head)
+        if m:
+            return (4, int(m.group(1)) * scale, qualifier)
+    return (98, 0.0, str(tp))
+
+
+def is_pre_infusion(fname: str) -> bool:
+    """Pre-infusion sample (Baseline / Screen / Pre) — the donor-HLA negative reference."""
+    tp = timepoint_from_file(fname)
+    if tp is not None:
+        return tp.split(" ")[0].lower() in _PRE_TPS
+    return bool(PRE_PAT.search(strip_source_prefix(fname)))
+
+
+def is_baseline(fname: str) -> bool:
+    """Baseline / screening sample — the default reference timepoint for anchoring."""
+    tp = timepoint_from_file(fname)
+    if tp is not None:
+        return tp.split(" ")[0].lower() in _BASE_TPS
+    return bool(BASE_PAT.search(strip_source_prefix(fname)))
 
 
 def load_manual(path: str | Path) -> pd.DataFrame:

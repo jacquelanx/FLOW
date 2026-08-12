@@ -89,6 +89,7 @@ export default function RunLauncher({
   return (
     <div className="page">
       <header className="page-head">
+        <div className="eyebrow">Step 4 of 4</div>
         <h2>Launch a run</h2>
         <p className="subtitle">
           Confirm the question and model, then start. The agent writes and runs code inside a
@@ -241,8 +242,19 @@ export default function RunLauncher({
 
           <div className="actions" style={{ marginTop: 20 }}>
             <button className="primary" onClick={start} disabled={starting || !question.trim()}>
-              {starting ? <span className="spinner" /> : "Start run"}
+              {starting ? (
+                <>
+                  <span className="spinner" /> Starting…
+                </>
+              ) : (
+                "Start run"
+              )}
             </button>
+            {!question.trim() && (
+              <span className="hint" style={{ margin: 0 }}>
+                Add a research question above to enable Start.
+              </span>
+            )}
           </div>
           {err && <div className="banner err">{err}</div>}
         </section>
@@ -252,13 +264,23 @@ export default function RunLauncher({
             <div className="card-title">Before you start</div>
             <ul className="reflist">
               <li>
-                <div className="name">Sandbox</div>
+                <div className="name">
+                  Sandbox{" "}
+                  <span className={`badge ${dockerReady ? "ok" : "err"}`}>
+                    {dockerReady ? "ready" : "not ready"}
+                  </span>
+                </div>
                 <div className="desc">
                   {dockerReady ? "Docker is ready." : "Docker is not ready — see the notice."}
                 </div>
               </li>
               <li>
-                <div className="name">Question</div>
+                <div className="name">
+                  Question{" "}
+                  <span className={`badge ${question.trim() ? "ok" : "warn"}`}>
+                    {question.trim() ? "set" : "missing"}
+                  </span>
+                </div>
                 <div className="desc">{question.trim() ? "Set." : "Add a question to enable Start."}</div>
               </li>
               <li>

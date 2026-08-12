@@ -61,6 +61,12 @@ export default function LiveTrajectory({
 
   const terminal = batch && ["completed", "failed", "error"].includes(batch.status);
   const synthesizing = batch?.phase === "synthesizing";
+  // Progress across the batch, so the wait has a visible end in sight.
+  const nTotal = batch?.run.n_trajectories ?? 0;
+  const nDone = batch
+    ? batch.trajectories.filter((t) => t.submitted || t.status === "completed").length
+    : 0;
+  const pct = nTotal ? Math.round((nDone / nTotal) * 100) : 0;
 
   return (
     <div className="page">
@@ -74,16 +80,21 @@ export default function LiveTrajectory({
 
       <div className="banner ok">
         The notebook’s <strong>opening cell is the automated first-run</strong> (preprocessing
-        + gating). The steps below are the <strong>agent interpreting and refining</strong>
+        + gating). The steps below are the <strong>agent interpreting and refining</strong>{" "}
         those results — so step 1 already builds on the first-run output. The full notebook,
         including the first-run cell, is on the <em>Notebook</em> page.
       </div>
 
       <div className="card">
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
           <BatchStatusBadge status={batch?.status} />
+          {batch && (
+            <span className="muted" style={{ fontSize: "0.88rem" }}>
+              {nDone} of {nTotal} trajector{nTotal === 1 ? "y" : "ies"} done
+            </span>
+          )}
           {synthesizing && (
-            <span className="muted">
+            <span className="muted" style={{ fontSize: "0.88rem" }}>
               <span className="spinner" /> synthesizing consensus…
             </span>
           )}
@@ -93,6 +104,17 @@ export default function LiveTrajectory({
             </button>
           )}
         </div>
+        {batch && (
+          <div
+            className="progress"
+            role="progressbar"
+            aria-valuenow={nDone}
+            aria-valuemin={0}
+            aria-valuemax={nTotal}
+          >
+            <span style={{ width: `${pct}%` }} />
+          </div>
+        )}
       </div>
 
       {batch && (
@@ -125,7 +147,7 @@ export default function LiveTrajectory({
             <div className="step" key={s.step}>
               <div className="step-head">
                 <span className="badge run">step {s.step}</span>
-                <span>{s.tool}</span>
+                <span className="tool">{s.tool}</span>
               </div>
               {s.tool === "edit_cell" && <pre>{String((s.arguments as any).source ?? "")}</pre>}
               {s.tool === "submit_answer" && (

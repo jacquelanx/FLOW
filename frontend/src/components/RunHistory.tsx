@@ -14,10 +14,25 @@ export default function RunHistory({
   onRunDeleted?: (rid: string) => void;
 }) {
   const [runs, setRuns] = useState<Batch[]>([]);
+  // Client-side narrowing — a project accumulates runs quickly and the question text is
+  // the only way most people remember which one they want.
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
 
   useEffect(() => {
     api.listRuns(projectId).then(setRuns).catch(() => setRuns([]));
   }, [projectId]);
+
+  const q = query.trim().toLowerCase();
+  const filtered = runs.filter((r) => {
+    const matchesText =
+      !q ||
+      r.question.toLowerCase().includes(q) ||
+      r.model.toLowerCase().includes(q) ||
+      r.id.toLowerCase().includes(q);
+    return matchesText && (!statusFilter || r.status === statusFilter);
+  });
+  const statuses = Array.from(new Set(runs.map((r) => r.status))).sort();
 
   async function remove(r: Batch) {
     if (!confirm("Delete this run and all its artifacts? This cannot be undone.")) return;
@@ -46,6 +61,45 @@ export default function RunHistory({
           </div>
         )}
         {runs.length > 0 && (
+          <div className="filterbar">
+            <input
+              aria-label="Filter runs"
+              placeholder="Filter by question, model, or run id…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <select
+              aria-label="Filter by status"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <option value="">All statuses</option>
+              {statuses.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+            <span className="hint">
+              {filtered.length} of {runs.length} run{runs.length === 1 ? "" : "s"}
+            </span>
+            {(query || statusFilter) && (
+              <button
+                className="ghost"
+                onClick={() => {
+                  setQuery("");
+                  setStatusFilter("");
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+        {runs.length > 0 && filtered.length === 0 && (
+          <div className="empty">No runs match this filter.</div>
+        )}
+        {filtered.length > 0 && (
           <table>
             <thead>
               <tr>
@@ -59,11 +113,11 @@ export default function RunHistory({
               </tr>
             </thead>
             <tbody>
-              {runs.map((r) => (
+              {filtered.map((r) => (
                 <tr key={r.id}>
                   <td className="muted">{new Date(r.created_at * 1000).toLocaleString()}</td>
                   <td title={r.question}>{truncate(r.question, 48)}</td>
-                  <td className="muted">{r.model}</td>
+                  <td className="muted mono">{r.model}</td>
                   <td>
                     {r.n_trajectories}
                     {r.status === "completed" && (
@@ -80,7 +134,7 @@ export default function RunHistory({
                   </td>
                   <td>
                     <button
-                      className="ghost"
+                      className="ghost danger"
                       disabled={["running", "pending", "synthesizing"].includes(r.status)}
                       title={
                         ["running", "pending", "synthesizing"].includes(r.status)

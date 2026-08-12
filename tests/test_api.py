@@ -102,6 +102,64 @@ def test_project_lifecycle_and_upload(client):
     assert "metadata" in kinds and "event_table" in kinds
 
 
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in members.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def test_upload_zip_keeps_every_fcs_from_a_folder_per_session_layout(client):
+    """One folder per acquisition session reuses basenames — none may be overwritten."""
+    c, _ = client
+    pid = c.post("/api/projects", json={"name": "nested"}).json()["id"]
+    members = {}
+    for session in ("Patient 9/Visit Baseline", "Patient 9/Visit D14"):
+        members[f"{session}/Specimen_001_{session.split()[-1]}.fcs"] = b"FCS3.0 a"
+        members[f"{session}/Specimen_001_Car.fcs"] = session.encode()  # repeated basename
+
+    resp = c.post(
+        f"/api/projects/{pid}/files",
+        files={"file": ("study.zip", _zip_bytes(members), "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    names = {e["name"] for e in resp.json()["extracted"]}
+    assert names == {
+        "study/Visit_Baseline__Specimen_001_Baseline.fcs",
+        "study/Visit_Baseline__Specimen_001_Car.fcs",
+        "study/Visit_D14__Specimen_001_D14.fcs",
+        "study/Visit_D14__Specimen_001_Car.fcs",
+    }
+    # Both same-named files survived, each with its own content.
+    import flow.db as db
+
+    root = db.data_root() / pid / "study"
+    assert (root / "Visit_Baseline__Specimen_001_Car.fcs").read_bytes() != (
+        root / "Visit_D14__Specimen_001_Car.fcs").read_bytes()
+    # The wrapper folder every member shares ("Patient 9") is dropped from the prefix.
+    assert not any("Patient_9" in n for n in names)
+
+
+def test_upload_zip_without_subfolders_keeps_plain_basenames(client):
+    """The reference study's flat zip must extract exactly as it always has."""
+    c, _ = client
+    pid = c.post("/api/projects", json={"name": "flat"}).json()["id"]
+    members = {"Specimen_001_Baseline.fcs": b"a", "Specimen_001_D14.fcs": b"b",
+               "metadata.json": b'{"car_channel": "DET-E"}'}
+    resp = c.post(
+        f"/api/projects/{pid}/files",
+        files={"file": ("study.zip", _zip_bytes(members), "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert sorted(e["name"] for e in resp.json()["extracted"]) == [
+        "metadata.json", "study/Specimen_001_Baseline.fcs", "study/Specimen_001_D14.fcs",
+    ]
+
+
 def test_upload_rejects_traversal(client):
     c, _ = client
     pid = c.post("/api/projects", json={"name": "x"}).json()["id"]

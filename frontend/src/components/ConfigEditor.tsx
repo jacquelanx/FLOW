@@ -103,6 +103,7 @@ export default function ConfigEditor({
   return (
     <div className="page">
       <header className="page-head">
+        <div className="eyebrow">Step 2 of 4</div>
         <h2>Configure the run</h2>
         <p className="subtitle">
           Set what you want to ask and how FLOW should run. You don’t specify any analysis
@@ -266,7 +267,8 @@ export default function ConfigEditor({
           aria-expanded={showAdvanced}
           onClick={() => setShowAdvanced((s) => !s)}
         >
-          {showAdvanced ? "▾" : "▸"} Advanced settings
+          <span className={`tri ${showAdvanced ? "open" : ""}`} aria-hidden="true" />
+          Advanced settings
         </button>
         {showAdvanced && (
           <div className="advanced">
@@ -328,7 +330,7 @@ export default function ConfigEditor({
         )}
       </section>
 
-      <div className="actions">
+      <div className="actions sticky-actions">
         <button className="secondary" onClick={() => save(false)}>
           Save
         </button>

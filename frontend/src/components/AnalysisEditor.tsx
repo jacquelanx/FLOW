@@ -113,6 +113,7 @@ export default function AnalysisEditor({
   return (
     <div className="page">
       <header className="page-head">
+        <div className="eyebrow">Step 3 of 4</div>
         <h2>Analysis specification</h2>
         <p className="subtitle">
           Here, you can specify the <strong>first-run script</strong> that does the actual
@@ -383,7 +384,7 @@ export default function AnalysisEditor({
         </label>
       </section>
 
-      <div className="actions">
+      <div className="actions sticky-actions">
         <button className="secondary" onClick={() => save(false)} disabled={saving}>
           {saving ? <span className="spinner" /> : "Save"}
         </button>
@@ -443,7 +444,7 @@ function StrList({
             }}
           />
           <button
-            className="ghost"
+            className="ghost danger"
             title="Remove"
             onClick={() => onChange(items.filter((_, j) => j !== i))}
           >
@@ -498,7 +499,7 @@ function ObjList<T extends object>({
             />
           ))}
           <button
-            className="ghost objlist-x"
+            className="ghost danger objlist-x"
             title="Remove"
             onClick={() => onChange(rows.filter((_, j) => j !== i))}
           >

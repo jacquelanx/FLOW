@@ -6,10 +6,11 @@ import re
 
 import numpy as np
 
+from .compare import (  # PRE_PAT/BASE_PAT live with the timepoint parser; re-exported here
+    BASE_PAT, PRE_PAT, is_comp_control, strip_source_prefix,
+)
 from .gates import gate_with, gmm_valley
 
-PRE_PAT = re.compile(r"(baseline|screen|(^|_)pre(\b|_|$))", re.I)
-BASE_PAT = re.compile(r"(baseline|screen)", re.I)
 NT_PAT = re.compile(r"nt[-_ ]?nk", re.I)
 CAR_PAT = re.compile(r"(^|_)car(\b|_|\.|$)", re.I)
 CTRL_PAT = re.compile(r"(nt[-_ ]?nk|cbmc|(^|_)car(\b|_|\.|$))", re.I)
@@ -165,11 +166,18 @@ def adaptive_car_from_donor(loaded, base_cuts, ch, hla_cut, hla_dim=False):
 
 
 def classify_file(fname: str) -> str:
-    """Return 'ntnk' | 'car' | 'cbmc' | 'timepoint'."""
-    if NT_PAT.search(fname):
+    """Return 'comp' | 'ntnk' | 'car' | 'cbmc' | 'timepoint'.
+
+    'comp' is an instrument compensation control — it passes a panel check but is not a
+    specimen, so callers drop it rather than gating it.
+    """
+    name = strip_source_prefix(fname)
+    if is_comp_control(name):
+        return "comp"
+    if NT_PAT.search(name):
         return "ntnk"
-    if CAR_PAT.search(fname):
+    if CAR_PAT.search(name):
         return "car"
-    if "cbmc" in fname.lower():
+    if "cbmc" in name.lower():
         return "cbmc"
     return "timepoint"

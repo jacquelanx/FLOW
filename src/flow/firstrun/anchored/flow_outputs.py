@@ -18,7 +18,7 @@ import numpy as np  # noqa: E402
 # Only flowkit-free imports at module top, so the pure-python helpers (unified_cutoffs,
 # composition_shift) are importable in environments without flowkit. Anything that touches
 # FCS I/O or the gate math is imported lazily inside the functions that need it.
-from .compare import timepoint_from_file
+from .compare import timepoint_from_file, timepoint_sort_key
 
 # CD8 detector in the lab panel — kept as a local constant to avoid a
 # top-level flowkit import just to label one row.
@@ -187,29 +187,46 @@ def write_composition_shift(multi_df, out_dir, reference_tp="Baseline"):
     """Tidy table: per population, value at each timepoint + Δ vs reference and vs previous.
 
     Everything is computed on the UNIFIED (anchored) cutoff, so a change here is a real
-    biological shift, not a moving ruler. Timepoint order follows ``multi_df`` (already
-    ordered by flow.csv upstream).
+    biological shift, not a moving ruler. Row order follows ``multi_df`` (already ordered
+    by flow.csv, or chronologically, upstream).
+
+    Rows are addressed positionally, so a sample whose timepoint could not be parsed
+    (labelled by filename here) and two samples sharing a label both survive instead of
+    collapsing the index.
     """
     if "timepoint" not in multi_df.columns:
         return None
-    tps = list(multi_df["timepoint"])
-    idx = multi_df.set_index("timepoint")
-    ref = reference_tp if reference_tp in idx.index else (tps[0] if tps else None)
+    # Label each row: its timepoint, or its filename when the timepoint is unknown, so
+    # every row is still reported and every label is distinct.
+    labels = []
+    seen = {}
+    for pos, row in enumerate(multi_df.to_dict("records")):
+        tp = row.get("timepoint")
+        label = str(tp) if tp is not None and tp == tp else str(row.get("file", f"row{pos}"))
+        n = seen.get(label, 0)
+        seen[label] = n + 1
+        labels.append(label if n == 0 else f"{label} #{n + 1}")
+
+    ref_pos = labels.index(reference_tp) if reference_tp in labels else (0 if labels else None)
+    ref = labels[ref_pos] if ref_pos is not None else None
 
     rows = []
     for metric in _SHIFT_METRICS:
         if metric not in multi_df.columns:
             continue
+        col = list(multi_df[metric])
         prev = None
-        base_val = float(idx.loc[ref, metric]) if ref is not None else None
-        for tp in tps:
-            v = idx.loc[tp, metric]
-            v = float(v) if v == v else None  # NaN-safe
+        base_val = None
+        if ref_pos is not None:
+            b = col[ref_pos]
+            base_val = float(b) if b == b and b is not None else None
+        for label, v in zip(labels, col):
+            v = float(v) if (v is not None and v == v) else None  # NaN-safe
             d_ref = (round(v - base_val, 3) if (v is not None and base_val is not None) else "")
             d_prev = (round(v - prev, 3) if (v is not None and prev is not None) else "")
             rows.append({
                 "population": metric,
-                "timepoint": tp,
+                "timepoint": label,
                 "value": round(v, 3) if v is not None else "",
                 "delta_from_reference": d_ref,
                 "delta_from_previous": d_prev,
@@ -252,6 +269,8 @@ def histogram_overlays(pairs, ch, anchor, plots_dir, order=None, hla_cut=None, c
     if order:
         ordered = sorted(tp_pairs, key=lambda p: order.index(_tp(p[0]))
                          if _tp(p[0]) in order else len(order))
+    else:
+        ordered = sorted(tp_pairs, key=lambda p: timepoint_sort_key(_tp(p[0])))
 
     written = []
     for key, marker in _OVERLAY_MARKERS:

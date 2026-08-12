@@ -8,6 +8,14 @@ const ACCEPTED_FILES: { name: string; desc: string }[] = [
   { name: "metadata.json", desc: "Experiment facts (which detector carries which stain, key dates)." },
   { name: "flow.csv", desc: "Timepoint sheet — columns label, date." },
   { name: "alc.csv", desc: "WBC count (K/µL) over time — columns date, alc. Used for absolute counts." },
+  {
+    name: "manual_gating.csv",
+    desc:
+      "Optional — the operator's own gated percentages, columns timepoint, b_p, t_p, cd4_p, " +
+      "cd8_p, nk_p, d_nk_p, car_d_p. Calibrates the analysis to your gating and reports how " +
+      "far the automated numbers differ. Timepoint labels must match the FCS filenames " +
+      "(Baseline, D14, week8 — not Day 14).",
+  },
   { name: "FCS files / events.csv", desc: "A folder of FCS files, or a combined per-event table." },
 ];
 
@@ -90,6 +98,7 @@ export default function ProjectUpload({
   return (
     <div className="page">
       <header className="page-head">
+        <div className="eyebrow">Step 1 of 4</div>
         <h2>Project &amp; upload</h2>
         <p className="subtitle">
           A project is a folder of your experiment’s files. Create or select one, add your
@@ -116,7 +125,7 @@ export default function ProjectUpload({
                       <span className="proj-id">{p.id}</span>
                     </button>
                     <button
-                      className="ghost"
+                      className="ghost danger"
                       title={`Delete project "${p.name}"`}
                       onClick={() => removeProject(p)}
                     >
@@ -165,7 +174,13 @@ export default function ProjectUpload({
                   upload(e.dataTransfer.files);
                 }}
               >
-                {busy ? <span className="spinner" /> : "Drop files here, or click to browse"}
+                {busy ? (
+                  <>
+                    <span className="spinner" /> uploading…
+                  </>
+                ) : (
+                  "Drop files here, or click to browse"
+                )}
               </div>
               <input
                 ref={inputRef}
@@ -177,61 +192,6 @@ export default function ProjectUpload({
             </section>
           )}
 
-          {profile && (
-            <section className="card">
-              <h3>Validation</h3>
-              {profile.notes.map((n, i) => (
-                <div key={i} className="banner warn">
-                  {n}
-                </div>
-              ))}
-              <table>
-                <thead>
-                  <tr>
-                    <th>File</th>
-                    <th>Recognized as</th>
-                    <th>Rows</th>
-                    <th>Columns</th>
-                    <th>Status</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {profile.files.map((f) => (
-                    <tr key={f.name}>
-                      <td>{f.name}</td>
-                      <td>{f.kind}</td>
-                      <td>{f.rows ?? "—"}</td>
-                      <td className="muted">{f.columns.join(", ") || f.detail}</td>
-                      <td>
-                        {f.ok ? (
-                          <span className="badge ok">ok</span>
-                        ) : (
-                          <span className="badge err" title={f.detail}>
-                            error
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        <button
-                          className="ghost"
-                          title={`Delete ${f.name}`}
-                          onClick={() => remove(f.name)}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="actions" style={{ marginTop: 18 }}>
-                <button className="primary" onClick={onNext}>
-                  Next: configure →
-                </button>
-              </div>
-            </section>
-          )}
         </div>
 
         <aside className="aside">
@@ -258,6 +218,73 @@ export default function ProjectUpload({
           </section>
         </aside>
       </div>
+
+      {/* Validation sits below the split at full page width: each FCS row carries the file's
+          whole channel list, which is unreadable squeezed into one column of the split. */}
+      {profile && (
+        <section className="card">
+          <h3>Validation</h3>
+          {/* A one-line verdict first, so a non-specialist can tell at a glance whether the
+              upload is usable before reading the per-file table. */}
+          {profile.files.length > 0 && (
+            <p className="hint" style={{ marginTop: 0, marginBottom: 16 }}>
+              {profile.files.filter((f) => f.ok).length} of {profile.files.length} file
+              {profile.files.length === 1 ? "" : "s"} recognized and readable
+              {profile.files.some((f) => !f.ok) && " — see the rows marked error below"}.
+            </p>
+          )}
+          {profile.notes.map((n, i) => (
+            <div key={i} className="banner warn">
+              {n}
+            </div>
+          ))}
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Recognized as</th>
+                <th>Rows</th>
+                <th>Columns</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {profile.files.map((f) => (
+                <tr key={f.name}>
+                  <td className="mono">{f.name}</td>
+                  <td>{f.kind}</td>
+                  <td>{f.rows ?? "—"}</td>
+                  <td className="muted">{f.columns.join(", ") || f.detail}</td>
+                  <td>
+                    {f.ok ? (
+                      <span className="badge ok">ok</span>
+                    ) : (
+                      <span className="badge err" title={f.detail}>
+                        error
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <button
+                      className="ghost danger"
+                      title={`Delete ${f.name}`}
+                      onClick={() => remove(f.name)}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="actions" style={{ marginTop: 18 }}>
+            <button className="primary" onClick={onNext}>
+              Next: configure →
+            </button>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

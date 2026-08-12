@@ -258,11 +258,33 @@ def create_app() -> FastAPI:
         report = validate_file(dest)
         return {"file": report.__dict__, "size": size}
 
+    def _common_dir_parts(members: list[zipfile.ZipInfo]) -> list[str]:
+        """Directory components shared by every member (the zip's wrapper folder(s))."""
+        dirs = [[p for p in Path(m.filename).parent.parts if p not in (".", "/")]
+                for m in members]
+        if not dirs:
+            return []
+        common = dirs[0]
+        for d in dirs[1:]:
+            i = 0
+            while i < min(len(common), len(d)) and common[i] == d[i]:
+                i += 1
+            common = common[:i]
+            if not common:
+                break
+        return common
+
     def _extract_zip(zip_path: Path, project_dir: Path) -> list[dict[str, Any]]:
         """Safely extract a zip: FCS -> <stem>/ subdir, other files -> project root.
 
-        Uses basenames only (zip-slip safe), skips macOS junk, and caps total expanded
+        Writes basenames only (zip-slip safe), skips macOS junk, and caps total expanded
         size to guard against zip bombs.
+
+        Instrument software often exports one folder per acquisition session, reusing the
+        same basenames in every folder. Writing those by basename alone silently overwrote
+        all but the last, so each FCS keeps the folder it came from as a
+        ``<source folder>__`` prefix. The first-run script looks past that prefix, so the
+        original filename still drives how the file is interpreted.
         """
         max_total = 2 * 1024 * 1024 * 1024
         total = 0
@@ -270,22 +292,45 @@ def create_app() -> FastAPI:
             stem = sanitize_filename(zip_path.stem)
         except UnsafePathError:
             stem = "extracted"
+
         extracted: list[dict[str, Any]] = []
+        used: set[str] = set()
         with zipfile.ZipFile(zip_path) as zf:
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                member = Path(info.filename).name
-                if not member or "__MACOSX" in info.filename or member.startswith("._"):
-                    continue
+            members = [
+                i for i in zf.infolist()
+                if not i.is_dir()
+                and Path(i.filename).name
+                and "__MACOSX" not in i.filename
+                and not Path(i.filename).name.startswith("._")
+            ]
+            # Drop the directory levels every member shares (the wrapper folder), so a
+            # prefix names the meaningful folder ("UPN 25 D14"), not the whole tree.
+            common_parts = _common_dir_parts(members)
+            for info in members:
+                src_path = Path(info.filename)
                 try:
-                    safe = sanitize_filename(member)
+                    safe = sanitize_filename(src_path.name)
                 except UnsafePathError:
                     continue
                 total += info.file_size
                 if total > max_total:
                     raise HTTPException(status_code=413, detail="Zip expands beyond size limit.")
                 if Path(safe).suffix.lower() == ".fcs":
+                    folders = [p for p in src_path.parent.parts if p not in (".", "/")]
+                    folders = folders[len(common_parts):]
+                    if folders:
+                        try:
+                            prefix = "-".join(sanitize_filename(p) for p in folders)
+                            safe = f"{prefix}__{safe}"
+                        except UnsafePathError:
+                            pass
+                    # Belt-and-braces: never let two members land on one path.
+                    base, suffix = safe[: -len(".fcs")], safe[-len(".fcs"):]
+                    n = 2
+                    while safe.lower() in used:
+                        safe = f"{base}-{n}{suffix}"
+                        n += 1
+                    used.add(safe.lower())
                     sub = project_dir / stem
                     sub.mkdir(exist_ok=True)
                     out_path = sub / safe

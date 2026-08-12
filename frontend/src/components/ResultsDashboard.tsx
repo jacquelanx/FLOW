@@ -45,10 +45,54 @@ export default function ResultsDashboard({
         </p>
       </header>
 
+      {/* Headline numbers first — the shape of the run before any of its prose. */}
+      <section className="card">
+        <div className="statgrid">
+          <div className="stat">
+            <span className="stat-label">Status</span>
+            <span className="stat-value" style={{ fontSize: "0.95rem" }}>
+              {status}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Trajectories</span>
+            <span className="stat-value">{batch.run.n_trajectories}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Answered</span>
+            <span className="stat-value">
+              {nSubmitted}
+              <span className="muted" style={{ fontWeight: 400 }}>
+                {" "}
+                / {batch.run.n_trajectories}
+              </span>
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Agent steps</span>
+            <span className="stat-value">
+              {batch.trajectories.reduce((n, t) => n + t.steps, 0)}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Consensus</span>
+            <span className="stat-value" style={{ fontSize: "0.95rem" }}>
+              {consensus.consensus ? (consensus.synthesized ? "synthesized" : "single") : "—"}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Model</span>
+            <span className="stat-value small" title={batch.run.model}>
+              {batch.run.model || "—"}
+            </span>
+          </div>
+        </div>
+      </section>
+
       {batch.run.question && (
         <section className="card">
           <div className="card-title">Research question</div>
-          <div className="code" style={{ fontSize: "0.95rem" }}>{batch.run.question}</div>
+          <div className="prose">{batch.run.question}</div>
           <p className="hint">
             {batch.run.model && <>Model: {batch.run.model}. </>}
             {batch.run.n_trajectories} trajector{batch.run.n_trajectories === 1 ? "y" : "ies"}.
@@ -76,11 +120,17 @@ export default function ResultsDashboard({
 
       {consensus.consensus && (
         <section className="card">
-          <div className="card-title">
-            Consensus
-            {consensus.synthesized === false && " (single trajectory)"}
+          <div
+            className="card-title"
+            style={{ display: "flex", alignItems: "center", gap: 12 }}
+          >
+            <span>
+              Consensus
+              {consensus.synthesized === false && " (single trajectory)"}
+            </span>
+            <CopyButton text={consensus.consensus} />
           </div>
-          <div className="code" style={{ fontSize: "0.95rem" }}>{consensus.consensus}</div>
+          <div className="prose">{consensus.consensus}</div>
           <p className="hint">
             {consensus.synthesized
               ? `Synthesized from ${consensus.n_submitted} of ${consensus.n_total} trajectories that produced an answer.`
@@ -115,7 +165,12 @@ export default function ResultsDashboard({
                     )}
                   </td>
                   <td>{t.steps}</td>
-                  <td>{isOpen ? text : truncate(text, 90)}</td>
+                  <td>
+                    <span className="caret">
+                      <span className={`tri ${isOpen ? "open" : ""}`} aria-hidden="true" />
+                    </span>
+                    {isOpen ? text : truncate(text, 90)}
+                  </td>
                 </tr>
               );
             })}
@@ -140,4 +195,27 @@ export default function ResultsDashboard({
 
 function truncate(s: string, n: number) {
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+// Copy the consensus text so it can be pasted into a lab notebook or email.
+function CopyButton({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      className="secondary"
+      style={{ padding: "2px 10px", fontSize: "0.76rem", textTransform: "none" }}
+      title="Copy the consensus text"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setDone(true);
+          setTimeout(() => setDone(false), 1600);
+        } catch {
+          /* clipboard unavailable — nothing to do */
+        }
+      }}
+    >
+      {done ? "Copied" : "Copy"}
+    </button>
+  );
 }
