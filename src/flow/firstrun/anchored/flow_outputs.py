@@ -27,7 +27,10 @@ _CD4_CHANNEL = "Alexa Fluor 700-A"
 
 
 # ── D1 fallback: anchor on the negative population, no manual gating needed ──────
-def build_negative_anchor(patient_dir, ch, reference_tp, out_path, subsample=200_000):
+def build_negative_anchor(
+    patient_dir, ch, reference_tp, out_path, subsample=200_000,
+    control_repository=None,
+):
     """Build an anchor from the reference sample's negative-population valley cuts.
 
     Derive one cutoff per marker on the reference (pre-infusion) sample using valley finders
@@ -53,10 +56,20 @@ def build_negative_anchor(patient_dir, ch, reference_tp, out_path, subsample=200
         raise FileNotFoundError(
             f"No FCS for reference timepoint {reference_tp!r} in {fcs_dir}")
 
-    from .fcs_io import load_xform  # lazy — pulls in flowkit
+    from .fcs_io import inspect_fcs_metadata, load_xform  # lazy — pulls in flowkit
+    from .control_compensation import candidate_for_acquisition
     from .gates import file_cuts
 
-    df, ntot = load_xform(ref_file, subsample=subsample)
+    metadata_audit = inspect_fcs_metadata(ref_file)
+    control_candidate = candidate_for_acquisition(
+        control_repository or {},
+        str(metadata_audit.get("acquisition_id") or "UNASSIGNED"),
+        specimen_voltages=metadata_audit.get("detector_voltages"),
+        require_voltage_match=True,
+    )
+    df, ntot = load_xform(
+        ref_file, subsample=subsample, control_derived_candidate=control_candidate
+    )
     print(f"[neg-anchor] reference {ref_file.name} (n={ntot:,}) — deriving negative-population "
           f"valley cuts", flush=True)
     cuts = file_cuts(df, ch)  # negative-peak → first-valley per marker (her finders)

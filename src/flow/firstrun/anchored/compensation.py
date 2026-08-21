@@ -1,9 +1,9 @@
 """Auditable FCS spillover parsing and compensation provenance.
 
-The canonical first run uses the spillover matrix embedded in each specimen FCS.  This
-module makes that choice explicit and machine-checkable; acquisition control files are
-inventoried as independent verification evidence, never silently substituted for an
-embedded matrix.
+The canonical first run uses a valid spillover matrix embedded in each specimen FCS. This
+module makes that choice explicit and machine-checkable. A complete control-derived matrix
+can serve as a fallback only for the exact acquisition and matching detector settings;
+historical/reference controls are comparison evidence and are never silently substituted.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,7 +26,10 @@ class CompensationError(RuntimeError):
 
 
 def _stain_identity(value: str) -> str:
-    normalized = Path(str(value)).stem.lower().replace("2f", "")
+    # Do not use ``Path.stem`` here: detector labels such as ``UV 450 L/D-A`` contain a
+    # slash but are not filesystem paths. Only a literal terminal FCS suffix is removed.
+    normalized = re.sub(r"\.fcs$", "", str(value).strip(), flags=re.IGNORECASE)
+    normalized = normalized.lower().replace("2f", "")
     if "stained control" in normalized:
         normalized = normalized.split("stained control", 1)[0]
     normalized = normalized.replace("compensation controls", "")
@@ -117,8 +121,55 @@ def parse_spillover(value: str) -> SpilloverMatrix:
     return SpilloverMatrix(channels, matrix, digest, condition, state, tuple(reasons))
 
 
-def acquisition_id(path: str | Path) -> str:
-    """Recover source acquisition folder from FLOW's ``folder__file.fcs`` convention."""
+def _metadata_value(metadata: dict[str, Any] | None, key: str) -> Any:
+    if not metadata:
+        return None
+    lower = {str(name).lower().lstrip("$"): value for name, value in metadata.items()}
+    return lower.get(key.lower().lstrip("$"))
+
+
+def acquisition_date(metadata: dict[str, Any] | None) -> str | None:
+    """Return an ISO acquisition date from FCS ``$DATE`` when it is parseable."""
+    raw = _metadata_value(metadata, "date")
+    if raw in (None, ""):
+        return None
+    text = str(raw).strip()
+    for pattern in ("%d-%b-%Y", "%d-%b-%y", "%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, pattern).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def acquisition_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract stable acquisition provenance without treating export time as run time."""
+    date = acquisition_date(metadata)
+    cytometer = _metadata_value(metadata, "cyt")
+    serial = _metadata_value(metadata, "cytnum")
+    return {
+        "acquisition_date": date,
+        "acquisition_start_time": _metadata_value(metadata, "btim"),
+        "acquisition_end_time": _metadata_value(metadata, "etim"),
+        "cytometer": None if cytometer in (None, "") else str(cytometer),
+        "cytometer_serial": None if serial in (None, "") else str(serial),
+        "event_guid": _metadata_value(metadata, "guid"),
+        "export_time": _metadata_value(metadata, "export time"),
+    }
+
+
+def acquisition_id(path: str | Path, metadata: dict[str, Any] | None = None) -> str:
+    """Resolve acquisition by metadata, falling back to FLOW's flattened folder prefix.
+
+    The run date and cytometer serial are the portable link between an unprefixed specimen
+    and controls acquired with that instrument on that date. Export folder names remain a
+    fallback only; an export timestamp is never treated as an acquisition timestamp.
+    """
+    record = acquisition_metadata(metadata)
+    if record["acquisition_date"] and record["cytometer_serial"]:
+        return f"{record['acquisition_date']}|{record['cytometer_serial']}"
+    if record["acquisition_date"] and record["cytometer"]:
+        return f"{record['acquisition_date']}|{record['cytometer']}"
     name = Path(path).name
     if "__" in name:
         prefix = name.split("__", 1)[0].strip()
@@ -183,8 +234,14 @@ def summarize_compensation(audits: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "within_acquisition_matrix_disagreement": disagreements,
         "blocked_files": sorted(set(blockers)),
         "review_files": sorted(set(reviews)),
-        "canonical_source": "embedded_fcs_spillover",
-        "control_policy": "controls inventoried for verification; never silently substituted",
+        "selected_sources": sorted({
+            str(record.get("compensation_source") or "missing") for record in records
+        }),
+        "canonical_source_policy": (
+            "valid embedded first; complete run-matched control-derived fallback only for "
+            "missing/invalid embedded; valid embedded override requires analyst approval"
+        ),
+        "control_policy": "historical/reference controls can never silently substitute",
     }
 
 
@@ -202,8 +259,18 @@ def verify_control_settings(
                               for row in specimens})
     for aid in acquisition_ids:
         spec = [row for row in specimens if row.get("acquisition_id") == aid]
-        ctrl = [row for row in controls if row.get("acquisition_id") == aid]
-        inventory_acq = [row for row in inventory if row.get("acquisition_id") == aid]
+        ctrl_all = [row for row in controls if row.get("acquisition_id") == aid]
+        ctrl_by_event = {}
+        for row in ctrl_all:
+            key = str(row.get("event_identity") or row.get("file") or "unknown")
+            ctrl_by_event.setdefault(key, row)
+        ctrl = list(ctrl_by_event.values())
+        inventory_all = [row for row in inventory if row.get("acquisition_id") == aid]
+        inventory_by_event = {}
+        for row in inventory_all:
+            key = str(row.get("event_identity") or row.get("file") or "unknown")
+            inventory_by_event.setdefault(key, row)
+        inventory_acq = list(inventory_by_event.values())
         ctrl_names = [str(row.get("file", "")) for row in inventory_acq]
         unstained = [name for name in ctrl_names if "unstained control" in name.lower()]
         single_stain_rows = [row for row in inventory_acq

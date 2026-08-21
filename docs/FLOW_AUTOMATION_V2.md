@@ -58,11 +58,14 @@ reviewable runs belong inside the patient/project tree:
       QC_Report_<study>.pdf
       Interactive_Longitudinal_QC_<study>.html
       Longitudinal_Cell_Composition_<study>.pdf
+      Acquisition_Cleaning_Sensitivity_<study>.pdf
       report_page_index.csv
       pages/pdf/<study>_QC_page_<NNN>_<timepoint-or-role>.pdf
       pages/png/page_<NNN>.png
     tables/
       multilineage.csv
+      multilineage_time_cleaned_sensitivity.csv
+      acquisition_cleaning_population_comparison.csv
       temporal_cell_type_summary.csv
       lymph_density_geometry.csv
       composition_shift.csv
@@ -92,22 +95,31 @@ The project-local launcher refuses to replace a non-empty run directory:
 python scripts/run_project_first_run.py \
   --project /path/to/UPN27 \
   --data /path/to/frozen/input_snapshot \
-  --run-id upn27_flowjo_v10_organized
+  --run-id upn27_flowjo_v22_compensation_time_cleaning \
+  --compensation-controls /path/to/machine/readout/control_exports \
+  --analysis-contract /path/to/frozen/data_contract.json
 ```
 
 Use a new run ID whenever canonical inputs, code, configuration, or artifacts change.
 
 ## Compensation policy
 
-The embedded `$SPILL`/`$SPILLOVER` matrix in each specimen is the canonical matrix because it
-travels with that acquisition's data and preserves channel order. FLOW now validates its
-dimensions, unique channels, finite values, diagonal, condition number, application result,
-and SHA-256. A present matrix that cannot be parsed or applied is fatal; it is never silently
-ignored.
+The embedded `$SPILL`/`$SPILLOVER` matrix in each specimen is the canonical default because it
+travels with that specimen and preserves channel order. FLOW validates its dimensions, unique
+channels, finite values, diagonal, condition number, application result, and SHA-256.
 
-Separate unstained and single-stain controls from the same acquisition are still required to
-verify the embedded matrix and detector settings. They are inventoried and never treated as
-biological specimens. An applied embedded matrix is
+When a separate control root is supplied, FLOW groups controls by FCS acquisition date plus
+cytometer serial, collapses repeated exports by event GUID, requires one unstained and one
+unique single-stain control per spill channel, checks detector voltages, derives a robust
+median-difference candidate matrix, and measures post-compensation residual spillover. A
+control-derived candidate can serve as fallback only for a specimen with the exact acquisition
+ID and matching detector settings when its embedded matrix is missing or invalid. A valid
+embedded matrix remains selected unless an analyst approves an override after an objective
+residual comparison. The selected source, hashes, comparison, and recommendation are written to
+`compensation_selection.csv`.
+
+Separate unstained and single-stain controls are never treated as biological specimens. An
+applied embedded matrix is
 `PROVISIONAL_EMBEDDED_UNVERIFIED` until all of these pass:
 
 - exact specimen-to-acquisition mapping;
@@ -117,9 +129,10 @@ biological specimens. An applied embedded matrix is
 - compatible channels and `$P#V` detector settings;
 - no within-acquisition matrix disagreement.
 
-Missing controls or ambiguous acquisition mapping blocks fluorescence identity/release while
-allowing scatter-only technical QC to continue. FLOW does not silently replace an embedded
-matrix with a control-derived matrix.
+Controls from a different date/acquisition are labeled `REFERENCE_NOT_RUN_MATCHED`; they can
+support method comparison but cannot replace a specimen matrix. Missing run-matched controls or
+ambiguous acquisition mapping blocks fluorescence identity/release while allowing scatter-only
+technical QC to continue.
 
 ## Time and detector-setting QC
 
@@ -128,9 +141,13 @@ multi-channel median excursions. These are **signal-instability proxies**, not p
 voltage changes. Static `$P#V` values are recorded separately and compared across acquisition-
 linked specimens and controls.
 
-Canonical event removal is always `false`. Flagged intervals may be tested only through one
-authorized `acquisition_mask` shadow pass. Missing Time or voltage metadata is
-`NOT_EVALUABLE`, never `PASS`.
+Canonical event removal remains `false`. The first run also emits a separately labeled
+Time-cleaned sensitivity analysis: only events in predeclared candidate Time bins are removed,
+the exact event IDs/reasons are written to a compressed ledger, and canonical gate parameters
+are reapplied without refitting. Canonical versus cleaned counts and percentages are reported in
+CSV plus `Acquisition_Cleaning_Sensitivity_<study>.pdf`. These candidate exclusions are not
+called voltage spikes and cannot be promoted into the canonical run without human review.
+Missing Time or voltage metadata is `NOT_EVALUABLE`, never `PASS`.
 
 ## Local development
 

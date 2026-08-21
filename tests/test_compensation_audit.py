@@ -6,8 +6,11 @@ import numpy as np
 import pytest
 
 from flow.firstrun.anchored.compensation import (
-    CompensationError, acquisition_id, parse_spillover, summarize_compensation,
+    CompensationError, _stain_identity, acquisition_id, parse_spillover, summarize_compensation,
     verify_control_settings,
+)
+from flow.firstrun.anchored.control_compensation import (
+    candidate_for_acquisition, compare_specimens_to_control_repository,
 )
 
 
@@ -39,6 +42,48 @@ def test_malformed_spillover_is_fatal(value):
 def test_source_folder_prefix_recovers_acquisition():
     assert acquisition_id("2026-01-01-D3__Specimen_001_D3.fcs") == "2026-01-01-D3"
     assert acquisition_id("Specimen_001_D3.fcs") == "UNASSIGNED"
+
+
+def test_fcs_date_and_cytometer_serial_override_export_folder_name():
+    metadata = {"$DATE": "25-JUN-2025", "$CYTNUM": "H658006R1029"}
+    assert acquisition_id("old-export__sample.fcs", metadata) == (
+        "2025-06-25|H658006R1029"
+    )
+
+
+def test_stain_identity_preserves_detector_slashes():
+    assert _stain_identity("UV 450 L/D-A") == "uv450ld"
+    assert _stain_identity("Compensation Controls_UV 450 L,2f,D Stained Control.fcs") == (
+        "uv450ld"
+    )
+
+
+def test_reference_controls_do_not_become_run_matched_by_folder_proximity():
+    repository = {
+        "control_sets": [{
+            "acquisition_id": "2024-02-02|FORTESSA",
+            "state": "PASS",
+            "matrix_sha256": "reference",
+            "channels": ["A", "B"],
+        }],
+    }
+    specimen = [{
+        "file": "Specimen_001_Baseline.fcs",
+        "acquisition_id": "2025-06-25|FORTESSA",
+        "acquisition_date": "2025-06-25",
+        "cytometer_serial": "FORTESSA",
+        "compensation_source": "embedded_fcs_spillover",
+        "matrix_sha256": "embedded",
+        "matrix_channels": ["A", "B"],
+        "matrix_values": [[1.0, 0.1], [0.05, 1.0]],
+    }]
+    assert candidate_for_acquisition(repository, specimen[0]["acquisition_id"]) is None
+    selection = compare_specimens_to_control_repository(specimen, repository)
+    assert selection["state"] == "REVIEW"
+    assert selection["specimens"][0]["control_comparison_state"] == (
+        "REFERENCE_NOT_RUN_MATCHED"
+    )
+    assert selection["specimens"][0]["recommendation"] == "KEEP_EMBEDDED_PROVISIONAL"
 
 
 def test_within_acquisition_matrix_disagreement_blocks():

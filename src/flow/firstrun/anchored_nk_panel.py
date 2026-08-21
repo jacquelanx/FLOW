@@ -33,6 +33,13 @@ Outputs written below ``--out/outputs``:
   * ``reports/Longitudinal_Cell_Composition_<study>.pdf`` — percentages above and exact-date
                                                      ALC-calibrated K/uL estimates below;
                                                      gated counts are the fallback.
+  * ``reports/Acquisition_Cleaning_Sensitivity_<study>.pdf`` — canonical versus deterministic
+                                                     Time-cleaned sensitivity for flagged files.
+  * ``multilineage_time_cleaned_sensitivity.csv`` and
+    ``acquisition_cleaning_population_comparison.csv`` — before/after population results using
+                                                     the same gates without refitting.
+  * ``membership/time_cleaning_excluded_events.csv.gz`` — exact candidate event IDs removed
+                                                     only in the sensitivity analysis.
 Plus, under ``outputs/plots``: ``overlay_<marker>.png`` (all timepoints, shared axis, unified cut).
 Governance: ``first_run_bundle.json`` content-addresses inputs, source, configuration,
 and generated artifacts.
@@ -62,10 +69,15 @@ if str(_HERE) not in sys.path:
 import pandas as pd  # noqa: E402
 
 from anchored.compare import compare, load_manual, summarize  # noqa: E402
+from anchored.calibrate import classify_file  # noqa: E402
 from anchored.manual_check import (  # noqa: E402
     ManualGatingError, check_manual_gating, coverage_note,
 )
-from anchored.fcs_io import load_xform, resolve_channels  # noqa: E402
+from anchored.fcs_io import inspect_fcs_metadata, load_xform, resolve_channels  # noqa: E402
+from anchored.control_compensation import (  # noqa: E402
+    build_control_repository, candidate_for_acquisition,
+    infer_control_fluorescence_channels,
+)
 from anchored.evidence import build_first_run_bundle  # noqa: E402
 from anchored.flow_outputs import (  # noqa: E402
     build_negative_anchor, histogram_overlays, write_composition_shift, write_unified_cutoffs,
@@ -98,7 +110,8 @@ temporal_cell_type_summary.csv
 compare_manual.csv   — (if a manual CSV was provided) auto vs. manual %, delta, abs_delta.
 outputs/plots/overlay_*.png
                       — per marker, all timepoints on a shared axis with the unified cut drawn.
-                       The quantities a reader would take from them are measured in
+                       These plots are for a HUMAN reader. The quantities a reader would take
+                       from them are measured in
                        diagnostics_cutoff_audit.csv and diagnostics_transfer.csv; do not
                        claim visual observations unless image pixels were supplied.
 outputs/reports/report_page_index.csv and outputs/reports/pages/pdf/*.pdf
@@ -106,6 +119,11 @@ outputs/reports/report_page_index.csv and outputs/reports/pages/pdf/*.pdf
 lymph_density_geometry.csv
                       — deterministic Live-CD45 density-mode diagnostics plotted in panel 2;
                         never used to change gate membership or reported percentages.
+multilineage_time_cleaned_sensitivity.csv
+                      — separately labeled Time-cleaned sensitivity using the canonical gate
+                        parameters without refitting; never replaces multilineage.csv.
+acquisition_cleaning_population_comparison.csv
+                      — exact canonical, cleaned, and percentage-point values per metric.
 """
 
 
@@ -228,6 +246,14 @@ def main() -> None:
     ap.add_argument("--data", required=True, help="Dataset dir (fcs/, metadata.json, ...).")
     ap.add_argument("--out", required=True, help="Where to write result CSVs.")
     ap.add_argument("--plots", default="", help="Where to write plots.")
+    ap.add_argument(
+        "--compensation-controls", default="",
+        help="Optional project-local directory containing single-stain/unstained control FCS.",
+    )
+    ap.add_argument(
+        "--analysis-contract", default="",
+        help="Optional frozen machine-readable analysis contract to hash into the bundle.",
+    )
     args = ap.parse_args()
 
     data_dir = Path(args.data).resolve()
@@ -236,6 +262,24 @@ def main() -> None:
     layout = FirstRunOutputLayout.create(out_dir)
     plots_dir = Path(args.plots).resolve() if args.plots else layout.plots
     plots_dir.mkdir(parents=True, exist_ok=True)
+    compensation_control_root = (
+        Path(args.compensation_controls).resolve() if args.compensation_controls else None
+    )
+    if compensation_control_root is not None and not compensation_control_root.is_dir():
+        raise SystemExit(
+            f"anchored_nk_panel: compensation-control directory not found: "
+            f"{compensation_control_root}"
+        )
+    compensation_control_files = (
+        sorted(
+            path for path in compensation_control_root.rglob("*.fcs")
+            if classify_file(path.name) == "comp"
+        )
+        if compensation_control_root is not None else []
+    )
+    analysis_contract = Path(args.analysis_contract).resolve() if args.analysis_contract else None
+    if analysis_contract is not None and not analysis_contract.is_file():
+        raise SystemExit(f"anchored_nk_panel: analysis contract not found: {analysis_contract}")
 
     meta = _load_meta(data_dir)
     # D1/D2/D3 knobs — defaults here for now; changing them
@@ -249,6 +293,47 @@ def main() -> None:
     # app put them (flat in the project root, in fcs/, or nested). Everything downstream uses
     # this patient_dir instead of the raw --data dir.
     patient_dir = _normalize_dataset(data_dir, out_dir)
+
+    # Prepare the same compensation fallback before anchor construction. Otherwise a
+    # run-matched control-derived matrix could rescue the canonical run but the earlier
+    # reference-anchor load would fail first when embedded compensation is absent/invalid.
+    patient_fcs = sorted((patient_dir / "fcs").glob("*.fcs"))
+    anchor_preflight = {}
+    anchor_expected_channels = []
+    for path in patient_fcs:
+        if classify_file(path.name) == "comp":
+            continue
+        try:
+            audit = inspect_fcs_metadata(path)
+        except Exception:
+            continue
+        anchor_preflight[str(path.resolve())] = audit
+        if not anchor_expected_channels and audit.get("embedded_matrix_channels"):
+            anchor_expected_channels = list(audit["embedded_matrix_channels"])
+    if not anchor_expected_channels and compensation_control_files:
+        anchor_expected_channels = infer_control_fluorescence_channels(
+            compensation_control_files
+        )
+    anchor_control_repository = (
+        build_control_repository(
+            compensation_control_files, classify_file, anchor_expected_channels
+        )
+        if compensation_control_files and anchor_expected_channels else {"control_sets": []}
+    )
+
+    def control_candidate(path: Path):
+        audit = anchor_preflight.get(str(path.resolve()))
+        if audit is None:
+            try:
+                audit = inspect_fcs_metadata(path)
+            except Exception:
+                return None
+        return candidate_for_acquisition(
+            anchor_control_repository,
+            str(audit.get("acquisition_id") or "UNASSIGNED"),
+            specimen_voltages=audit.get("detector_voltages"),
+            require_voltage_match=True,
+        )
 
     manual_ref = _find_manual(patient_dir)
     use_manual = manual_ref is not None and anchor_mode in ("auto", "manual")
@@ -275,16 +360,21 @@ def main() -> None:
         print(f"[anchored] calibrating reference '{reference_tp}' to manual gating "
               f"({manual_ref})", flush=True)
         build_operator_anchor(patient_dir, manual_ref, reference_tp=reference_tp,
-                              out_path=anchor_path, subsample=subsample)
+                              out_path=anchor_path, subsample=subsample,
+                              control_repository=anchor_control_repository)
     else:
         print(f"[anchored] no manual calibration — negative-population anchor at "
               f"'{reference_tp}'", flush=True)
-        build_negative_anchor(patient_dir, ch, reference_tp, anchor_path, subsample=subsample)
+        build_negative_anchor(
+            patient_dir, ch, reference_tp, anchor_path, subsample=subsample,
+            control_repository=anchor_control_repository,
+        )
 
     # ── 2. Run pipeline once (deterministic) with the anchor ───────────────
     process_patient(patient_dir, out_dir=out_dir,
                     manual_ref=(manual_ref if use_manual else None),
-                    subsample=subsample, verbose=True, anchor_path=anchor_path)
+                    subsample=subsample, verbose=True, anchor_path=anchor_path,
+                    compensation_control_paths=compensation_control_files)
 
     meta_pid = meta.get("patient_study") or data_dir.name
 
@@ -330,7 +420,10 @@ def main() -> None:
     if fcs_dir.is_dir():
         for f in sorted(fcs_dir.glob("*.fcs")):
             try:
-                df, _ = load_xform(f, subsample=subsample)
+                df, _ = load_xform(
+                    f, subsample=subsample,
+                    control_derived_candidate=control_candidate(f),
+                )
                 pairs.append((f.name, df))
             except Exception as e:
                 print(f"  overlay: could not load {f.name}: {e}", flush=True)
@@ -351,6 +444,15 @@ def main() -> None:
             f.write("\n" + check.report() + "\n")
             if manual_note:
                 f.write(f"compare_manual.csv covers: {manual_note}\n")
+        f.write(
+            f"\nCompensation control evidence: "
+            f"{len(compensation_control_files)} FCS from "
+            f"{compensation_control_root or 'not supplied'}\n"
+        )
+        f.write(
+            "Time-channel exclusions are emitted only as a separately labeled sensitivity "
+            "analysis; canonical membership remains unchanged.\n"
+        )
 
     # ── 5. Publish the typed human output package, then freeze the bundle ─────
     layout.write_catalog(str(meta_pid))
@@ -359,10 +461,11 @@ def main() -> None:
     config_files = [path for path in (
         data_dir / "metadata.json", data_dir / "flow.csv", data_dir / "alc.csv",
         data_dir / "cbc.csv", manual_ref, anchor_path,
+        analysis_contract,
     ) if path is not None and Path(path).exists()]
     bundle = build_first_run_bundle(
         out_dir=out_dir,
-        input_files=_collect_fcs(data_dir),
+        input_files=[*_collect_fcs(data_dir), *compensation_control_files],
         source_files=source_files,
         config_files=config_files,
     )

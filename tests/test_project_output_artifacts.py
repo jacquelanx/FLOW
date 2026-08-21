@@ -16,6 +16,7 @@ from flow.firstrun.anchored.qc_plots import (
     write_longitudinal_composition_report,
 )
 from flow.firstrun.anchored.output_layout import FirstRunOutputLayout
+from flow.firstrun.anchored.acquisition_cleaning import write_acquisition_cleaning_report
 
 
 def _multilineage_fixture():
@@ -232,3 +233,59 @@ def test_typed_output_layout_indexes_results_without_duplicate_ssa_aliases(tmp_p
     assert "reports/QC_Report_UPN27.pdf" in paths
     assert "reports/Interactive_Longitudinal_QC_UPN27.html" in paths
     assert "tables/multilineage.csv" in paths
+
+
+def test_time_cleaning_report_keeps_legend_outside_data_axes(tmp_path, monkeypatch):
+    target = tmp_path / "Acquisition_Cleaning_Sensitivity_UPN27.pdf"
+    summary = pd.DataFrame([{
+        "file": "Specimen_001_Pre.fcs", "timepoint": "Pre",
+        "acquisition_qc_state": "FAIL", "analyzed_event_count": 200_000,
+        "excluded_analyzed_event_count": 10_000,
+        "excluded_analyzed_event_percent": 5.0,
+        "full_file_candidate_event_count": 20_000,
+        "full_file_candidate_event_percent": 5.0,
+        "candidate_interval_count": 1,
+        "sensitivity_result": "EXCLUDED_CANDIDATE_INTERVALS",
+    }])
+    comparisons = pd.DataFrame([
+        {
+            "file": "Specimen_001_Pre.fcs", "metric": metric,
+            "canonical_percent": canonical, "cleaned_percent": cleaned,
+            "delta_percentage_points": cleaned - canonical,
+        }
+        for metric, canonical, cleaned in [
+            ("%Lymph_scatter (of total)", 70.0, 75.0),
+            ("%T (of lymph)", 50.0, 49.0),
+            ("%NK (of lymph)", 10.0, 11.0),
+        ]
+    ])
+    intervals = pd.DataFrame([{
+        "file": "Specimen_001_Pre.fcs", "start": 2.0, "end": 3.0,
+        "rate_burst": True, "signal_spike_proxy": True,
+    }])
+    captured = []
+    original_close = plt.close
+
+    def capture_close(fig):
+        captured.append(fig)
+
+    monkeypatch.setattr(plt, "close", capture_close)
+    try:
+        write_acquisition_cleaning_report(
+            summary, comparisons, intervals, target,
+            patient_id="UPN27", compensation_state="BLOCKED",
+        )
+        assert target.is_file() and target.stat().st_size > 5_000
+        detail = captured[-1]
+        detail.canvas.draw()
+        renderer = detail.canvas.get_renderer()
+        data_axes = [axis for axis in detail.axes if axis.axison]
+        assert len(detail.legends) == 1
+        legend_box = detail.legends[0].get_window_extent(renderer)
+        assert all(
+            not legend_box.overlaps(axis.get_window_extent(renderer))
+            for axis in data_axes
+        )
+    finally:
+        for figure in captured:
+            original_close(figure)

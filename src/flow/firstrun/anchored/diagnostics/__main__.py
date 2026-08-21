@@ -21,7 +21,8 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--data", required=True, help="Dataset dir (as given to the first-run).")
     ap.add_argument("--out", required=True,
-                    help="The first-run's output dir (holds operator_anchor.json).")
+                    help=("The first-run's output dir (the anchor may be at the legacy root "
+                          "or in outputs/provenance)."))
     ap.add_argument("--plots", default="", help="Plots dir, for locating the overlay figures.")
     ap.add_argument("--patient-dir", default=None,
                     help="Override the replayed patient dir (default: <out>/_dataset, else <data>).")

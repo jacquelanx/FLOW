@@ -30,6 +30,14 @@ def main() -> None:
     parser.add_argument("--project", required=True, help="Patient/project root, for example UPN27.")
     parser.add_argument("--data", required=True, help="Frozen first-run input snapshot.")
     parser.add_argument("--run-id", required=True, help="Stable, human-readable run identifier.")
+    parser.add_argument(
+        "--compensation-controls", default="",
+        help="Optional directory containing acquisition/reference compensation-control FCS.",
+    )
+    parser.add_argument(
+        "--analysis-contract", default="",
+        help="Optional validated analysis-contract JSON to freeze into provenance.",
+    )
     args = parser.parse_args()
 
     project = Path(args.project).resolve()
@@ -42,6 +50,14 @@ def main() -> None:
     if output.exists() and any(output.iterdir()):
         raise SystemExit(f"refusing to replace non-empty project run: {output}")
     output.mkdir(parents=True, exist_ok=True)
+    compensation_controls = (
+        Path(args.compensation_controls).resolve() if args.compensation_controls else None
+    )
+    analysis_contract = Path(args.analysis_contract).resolve() if args.analysis_contract else None
+    if compensation_controls is not None and not compensation_controls.is_dir():
+        raise SystemExit(f"compensation-control directory not found: {compensation_controls}")
+    if analysis_contract is not None and not analysis_contract.is_file():
+        raise SystemExit(f"analysis contract not found: {analysis_contract}")
     (output / "project_run_location.json").write_text(json.dumps({
         "schema_version": "flow.project_run_location.v1",
         "project_root": str(project),
@@ -49,6 +65,10 @@ def main() -> None:
         "first_run_dir": str(output),
         "layout": "<project>/analysis/flow/runs/<run_id>/first_run",
         "write_policy": "new run id required for a changed canonical result",
+        "compensation_control_root": (
+            str(compensation_controls) if compensation_controls is not None else None
+        ),
+        "analysis_contract": str(analysis_contract) if analysis_contract is not None else None,
     }, indent=2, sort_keys=True))
 
     repo = Path(__file__).resolve().parents[1]
@@ -60,6 +80,10 @@ def main() -> None:
         "--out", str(output),
         "--plots", str(output / "outputs" / "plots"),
     ]
+    if compensation_controls is not None:
+        command.extend(["--compensation-controls", str(compensation_controls)])
+    if analysis_contract is not None:
+        command.extend(["--analysis-contract", str(analysis_contract)])
     completed = subprocess.run(command, cwd=repo, check=False)
     if completed.returncode:
         raise SystemExit(completed.returncode)

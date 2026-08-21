@@ -1,7 +1,7 @@
 """Deterministic acquisition QC using Time and signal-stability proxies.
 
-This module never removes events from the canonical first run.  It reports candidate
-event intervals for a separately authorized shadow analysis.
+This module never removes events from the canonical first run. It reports candidate event
+intervals and builds an exact, separately labeled sensitivity mask for human review.
 """
 from __future__ import annotations
 
@@ -78,6 +78,14 @@ def analyze_acquisition(
         "event_exclusion_applied": False,
         "shadow_candidate_only": True,
         "voltage_spike_claim": "NOT_MADE",
+        "cleaning_policy_id": "time_rate_multichannel_robust_z.v1",
+        "cleaning_thresholds": {
+            "maximum_bins": int(max_bins),
+            "minimum_finite_time_events": int(min_events),
+            "event_rate_robust_z": 8.0,
+            "signal_median_robust_z": float(signal_z_threshold),
+            "minimum_concurrent_signal_channels": 2,
+        },
     }
     if time_channel is None:
         return base | {
@@ -145,8 +153,10 @@ def analyze_acquisition(
     candidate_fraction = float(candidate_count / finite.sum())
     intervals = [
         {
+            "bin_index": int(b),
             "start": float(edges[b]),
             "end": float(edges[b + 1]),
+            "end_inclusive": bool(b == n_bins - 1),
             "event_count": int(counts[b]),
             "rate_burst": bool(burst_bins[b]),
             "signal_spike_proxy": bool(signal_bins[b]),
@@ -180,3 +190,49 @@ def analyze_acquisition(
         "signal_channels_evaluated": len(signal_columns),
         "canonical_keep_count": len(df),
     }
+
+
+def acquisition_cleaning_keep_mask(
+    time_values: Sequence[float], acquisition_qc: Mapping[str, Any]
+) -> np.ndarray:
+    """Return the exact secondary-analysis mask for predeclared candidate intervals.
+
+    Files without evaluable Time, and PASS files with no candidate intervals, retain every
+    event. Interval upper bounds are exclusive except for the final acquisition bin, matching
+    the bin assignment used by :func:`analyze_acquisition`.
+    """
+    time = np.asarray(time_values, dtype=float)
+    keep = np.ones(len(time), dtype=bool)
+    if acquisition_qc.get("state") not in {"REVIEW", "FAIL"}:
+        return keep
+    for interval in acquisition_qc.get("candidate_time_intervals", []):
+        start = float(interval["start"])
+        end = float(interval["end"])
+        if interval.get("end_inclusive"):
+            hit = np.isfinite(time) & (time >= start) & (time <= end)
+        else:
+            hit = np.isfinite(time) & (time >= start) & (time < end)
+        keep[hit] = False
+    return keep
+
+
+def acquisition_exclusion_reason(
+    time_value: float, acquisition_qc: Mapping[str, Any]
+) -> str | None:
+    """Resolve a candidate event to its deterministic interval reason."""
+    if not math.isfinite(float(time_value)):
+        return None
+    for interval in acquisition_qc.get("candidate_time_intervals", []):
+        start = float(interval["start"])
+        end = float(interval["end"])
+        inside = start <= float(time_value) <= end if interval.get("end_inclusive") \
+            else start <= float(time_value) < end
+        if not inside:
+            continue
+        reasons = []
+        if interval.get("rate_burst"):
+            reasons.append("event_rate_burst")
+        if interval.get("signal_spike_proxy"):
+            reasons.append("concurrent_signal_instability_proxy")
+        return "|".join(reasons) or "candidate_time_interval"
+    return None

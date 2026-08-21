@@ -1428,8 +1428,9 @@ def _acquisition_qc_page(pdf, patient_id, acquisition_rows, page_number=None,
     ax.text(
         0.5, 0.06,
         "Signal instability is a Time-binned multi-channel median proxy, not proof of a "
-        "within-file voltage change. $P#V is audited separately. Canonical event removal = NO; "
-        "flagged intervals are eligible only for one authorized shadow analysis.",
+        "within-file voltage change. Static detector-voltage metadata ($P#V) is audited "
+        "separately and cannot identify individual events. Canonical event removal = NO; "
+        "the separately labeled Time-cleaned sensitivity report lists every excluded event.",
         ha="center", va="center", fontsize=7.2, color="#334455", wrap=True,
         transform=ax.transAxes,
         bbox=dict(boxstyle="round,pad=0.45", fc="#F5F7FA", ec="#AAB7C4", lw=0.8),
