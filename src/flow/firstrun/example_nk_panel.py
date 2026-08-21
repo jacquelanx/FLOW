@@ -756,6 +756,9 @@ cluster_profiles.csv   — unsupervised k-means clusters of CD45+live (complemen
   timepoint,cluster,n_events,pct_of_cd45, mfi_<marker>...  (per-cluster marker medians)
 
 plots/                 — gating_<tp>.png, umap_<tp>.png (per sample), trends_over_time.png.
+                         Drawn for the HUMAN reader: you cannot see their contents, so do not
+                         describe one. Judge from the CSVs above, which hold the numbers a
+                         reader would take off these figures.
 """
 
 

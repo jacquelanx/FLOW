@@ -46,6 +46,10 @@ export interface TrajectorySummary {
   submitted: boolean;
   failure_reason: string | null;
   answer: string;
+  // Null when the project's first-run left no obligations to check — which is NOT the same
+  // as zero undischarged, so the UI must not render null as "complete".
+  obligations_total: number | null;
+  obligations_undischarged: number | null;
 }
 
 export interface Consensus {
@@ -54,6 +58,7 @@ export interface Consensus {
   n_submitted: number | null;
   n_total: number | null;
   failure_reason: string | null;
+  n_with_unread_evidence: number | null;
 }
 
 export interface StepRecord {

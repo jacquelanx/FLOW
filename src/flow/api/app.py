@@ -631,6 +631,9 @@ def create_app() -> FastAPI:
             idx = t["idx"]
             live_t = live.get(str(idx), {})
             traj = Trajectory(base / str(idx))
+            # From run.json rather than the DB: no migration needed, and both fields are
+            # null unless the project's first-run actually left obligations to check.
+            run = traj.read_run_json()
             out.append({
                 "idx": idx,
                 "status": live_t.get("status", t["status"]),
@@ -638,6 +641,8 @@ def create_app() -> FastAPI:
                 "submitted": bool(t["submitted"]),
                 "failure_reason": t["failure_reason"],
                 "answer": traj.read_answer(),
+                "obligations_total": run.get("obligations_total"),
+                "obligations_undischarged": run.get("obligations_undischarged"),
             })
         return out
 
@@ -652,12 +657,14 @@ def create_app() -> FastAPI:
             return {
                 "consensus": c.get("consensus"),
                 "synthesized": c.get("synthesized"),
+                "n_with_unread_evidence": c.get("n_with_unread_evidence"),
                 "n_submitted": c.get("n_submitted"),
                 "n_total": c.get("n_total"),
                 "failure_reason": c.get("failure_reason"),
             }
         return {"consensus": None, "synthesized": None, "n_submitted": None,
-                "n_total": batch["n_trajectories"], "failure_reason": None}
+                "n_total": batch["n_trajectories"], "failure_reason": None,
+                "n_with_unread_evidence": None}
 
     @app.get("/api/runs/{rid}")
     def get_run(rid: str) -> dict[str, Any]:

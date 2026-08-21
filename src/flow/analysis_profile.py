@@ -89,17 +89,24 @@ def nk_seed_profile() -> AnalysisProfile:
         ],
         qc_expectations=(
             "Flag samples with few CD45+ events, low viability, or unstable acquisition; "
-            "down-weight unreliable timepoints and say which. Also EVALUATE the unified cutoff: "
-            "for each marker, check that the cutoff in unified_cutoffs.csv sits just to the "
-            "right of the negative population's leftmost peak, and that the same cutoff still "
-            "separates negative from positive at every timepoint in the overlay plots."
+            "down-weight unreliable timepoints and say which. Also EVALUATE the unified cutoff "
+            "— from the MEASUREMENTS, not from the figures. You cannot see image content: a PNG "
+            "or PDF reaches you as a filename, so the figures exist for the human reader and you "
+            "must never describe what one looks like. The diagnostics pass computes, from the "
+            "same event arrays that drew the overlays, the quantities a cytometrist reads off "
+            "them: whether a real valley exists at the reference and where the cutoff sits "
+            "relative to the negative population (diagnostics_cutoff_audit.csv), and whether the "
+            "locked cutoff still separates negative from positive at each later timepoint "
+            "(diagnostics_transfer.csv). Start from the digest's flagged items, then read the "
+            "rows behind the ones you rely on."
         ),
         desired_outputs=[
             "A per-timepoint table of population % and absolute counts (K/µL)",
             "Trend plots of the key populations over time",
             "A short plain-language summary of what the data show",
             "A brief judgement on whether the unified cutoff is reasonable, and which "
-            "timepoints (if any) would need another iteration",
+            "timepoints (if any) would need another iteration — citing the diagnostics "
+            "measurement behind each call",
         ],
         biological_context=(
             "Donor CAR-NK cell therapy followed longitudinally. The engineered NK product is "
@@ -116,14 +123,21 @@ def nk_seed_profile() -> AnalysisProfile:
             "TRANSFERS those cutoffs to all timepoints. These composition numbers are the "
             "authoritative, reproducible result — report them; do not re-derive per-sample "
             "cutoffs (that reintroduces the run-to-run drift this method exists to remove).\n"
-            "  • YOUR JOB is to (1) EVALUATE the cutoff: open unified_cutoffs.csv and the "
-            "overlay_<marker>.png plots and judge whether each cutoff is derived reasonably "
-            "and holds across timepoints; (2) if a cutoff looks wrong at some timepoint, you "
-            "MAY refine it in your own notebook and show the before/after and the impact — but "
-            "flag it as a deviation rather than silently replacing the anchored headline; "
-            "(3) then INTERPRET the unified cells: describe the cellular composition shift "
-            "across timepoints (composition_shift.csv), especially NK expansion and CAR+ "
-            "persistence, and say whether another iteration on the cutoff is warranted."
+            "  • YOUR JOB is to (1) EVALUATE the cutoff from the diagnostics MEASUREMENTS, "
+            "since you cannot see the overlay_<marker>.png figures — they are drawn for the "
+            "human reader. unified_cutoffs.csv gives the cutoff itself; "
+            "diagnostics_cutoff_audit.csv says whether it is well founded where it was derived; "
+            "diagnostics_transfer.csv says whether it still holds at each later timepoint; "
+            "diagnostics_uncertainty.csv gives every headline % a cutoff-attributable and a "
+            "counting error, separately. Judge each marker from those numbers and name the "
+            "measurement that drove your judgement. Where a quantity could not be measured, "
+            "report it as unmeasured — not as fine; (2) if a cutoff looks wrong at some "
+            "timepoint, you MAY refine it in your own notebook and show the before/after and "
+            "the impact — but flag it as a deviation rather than silently replacing the "
+            "anchored headline; (3) then INTERPRET the unified cells: describe the cellular "
+            "composition shift across timepoints (composition_shift.csv), especially NK "
+            "expansion and CAR+ persistence, and say whether another iteration on the cutoff "
+            "is warranted and at which timepoints."
         ),
     )
 

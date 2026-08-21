@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from flow.providers.registry import MODEL_CATALOG
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -40,7 +42,10 @@ def test_providers(client):
     assert "mock" in body["providers"]
     # New: model catalog + defaults power the UI dropdowns.
     assert "gemini" in body["catalog"]
-    assert body["default_models"]["groq"] == "llama-3.3-70b-versatile"
+    # Pinned to the catalog rather than a literal id: model ids get retired by providers, and
+    # a test asserting a dead one passes while the app hands out a 404.
+    assert body["default_models"]["groq"] == MODEL_CATALOG["groq"][0]
+    assert body["catalog"]["groq"] == MODEL_CATALOG["groq"]
     assert "google" not in body["ui_providers"]  # alias hidden from UI
 
 
@@ -52,7 +57,7 @@ def test_config_form_save_and_reload(client):
         json={
             "question": "How does DET-E change over time?",
             "provider": "groq",
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "max_steps": 18,
             "allow_network": True,
         },
@@ -280,6 +285,39 @@ def test_consensus_batch_lifecycle_with_stubbed_runner(client, monkeypatch):
     # History persists in DB.
     runs = c.get("/api/runs").json()["runs"]
     assert any(rr["id"] == rid for rr in runs)
+
+
+def test_trajectory_summaries_carry_evidence_coverage(client, monkeypatch):
+    """The UI hides its Evidence column on null and shows a count otherwise, so the API must
+    distinguish "no obligations existed" (null) from "none were left unread" (0)."""
+    import json as _json
+
+    import flow.db as db
+
+    c, _appmod = client
+    pid = c.post("/api/projects", json={"name": "x"}).json()["id"]
+    rid = "evbatch01"
+    batch_dir = db.artifacts_root() / rid
+    for idx, run_json in enumerate([
+        {"obligations_total": 15, "obligations_undischarged": 14},   # the check ran
+        {},                                                          # it did not
+    ]):
+        tdir = batch_dir / "trajectories" / str(idx)
+        tdir.mkdir(parents=True)
+        (tdir / "run.json").write_text(_json.dumps(run_json))
+        (tdir / "answer.txt").write_text(f"answer {idx}")
+    db.create_batch(rid, pid, "q", "mock", "mock", 2, str(batch_dir))
+    for idx in range(2):
+        db.create_trajectory(f"{rid}-{idx}", rid, idx,
+                             str(batch_dir / "trajectories" / str(idx)))
+        db.update_trajectory(f"{rid}-{idx}", status="completed", submitted=1, steps=7)
+
+    trajs = c.get(f"/api/runs/{rid}").json()["trajectories"]
+    by_idx = {t["idx"]: t for t in trajs}
+    assert by_idx[0]["obligations_total"] == 15
+    assert by_idx[0]["obligations_undischarged"] == 14
+    assert by_idx[1]["obligations_total"] is None
+    assert by_idx[1]["obligations_undischarged"] is None
 
 
 def test_download_zip(client, monkeypatch):

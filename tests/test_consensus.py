@@ -147,3 +147,70 @@ def test_run_batch_uses_separate_meta_model(tmp_path, monkeypatch):
     record = json.loads((batch_dir / "batch.json").read_text())
     assert record["meta_model"] == "consensus-model"
     assert record["model"] == "trajectory-model"
+
+
+# ── contradictions must be resolved, not filed ────────────────────────────────
+# Two analysts read the same off-trend timepoints from the same tables — one as acquisition
+# artefact, one as expected biology under conditioning — and the consensus reported both
+# under a "Disagreements and Differences in Approach" heading without testing either. Both
+# cannot hold, and a reader handed both learns only that the analysts differed. One of the two
+# readings was also refuted by a number the analysts themselves had quoted: %T (of lymph) went
+# 84.1% at D14 to 1.1% at D16, two days apart.
+
+def test_the_guidelines_require_a_contradiction_to_be_resolved_or_declared_unresolved():
+    from flow.consensus import META_SYSTEM_PROMPT
+
+    low = META_SYSTEM_PROMPT.lower()
+    assert "opposite conclusions" in low
+    assert "unresolved" in low
+    # Resolution must be anchored to a measurement, not to whichever analyst sounded surer.
+    assert "name the specific measurement" in low
+    # And the escape hatch the failing run used must be closed by name.
+    assert "difference in emphasis or approach" in low
+
+
+def test_the_guidelines_forbid_averaging_two_opposite_readings_into_a_hedge():
+    """A hedge that asserts neither reading is the other way to avoid resolving one."""
+    from flow.consensus import META_SYSTEM_PROMPT
+
+    assert "hedge that asserts neither" in META_SYSTEM_PROMPT.lower()
+
+
+def test_unanimity_does_not_launder_a_reading_the_numbers_contradict():
+    from flow.consensus import META_SYSTEM_PROMPT
+
+    low = META_SYSTEM_PROMPT.lower()
+    assert "does not become" in low and "another analyst shares it" in low
+    # The neighbouring-timepoint check is what would have caught the D14 -> D16 reading.
+    assert "neighbouring timepoint" in low
+
+
+def test_several_analysts_get_a_required_contested_points_section():
+    """Left to the guidelines alone, the model invented its own 'Disagreements' heading and
+    restated both readings under it. A required section that must contain a resolution or an
+    explicit 'unresolved' is harder to satisfy vacuously."""
+    from flow.consensus import _build_user_message
+
+    msg = _build_user_message("Q?", ["NK expanded.", "NK did not expand."])
+    assert "CONTESTED POINTS" in msg
+    # Including the case where there is genuinely nothing contested — silence there is
+    # indistinguishable from the section having been skipped.
+    assert "CONTESTED POINTS: none" in msg
+
+
+def test_a_single_analyst_is_not_asked_to_contest_itself():
+    """One conclusion cannot contradict another, and demanding the section anyway would
+    invite an invented disagreement."""
+    from flow.consensus import _build_user_message
+
+    assert "CONTESTED POINTS" not in _build_user_message("Q?", ["only one conclusion"])
+
+
+def test_the_evidence_not_read_rule_still_stands_alongside_the_new_one():
+    """Unread evidence is a limit on a conclusion, NOT a contradiction to reconcile — the two
+    rules must not collapse into each other."""
+    from flow.consensus import META_SYSTEM_PROMPT
+
+    assert "EVIDENCE NOT READ" in META_SYSTEM_PROMPT
+    assert "not a \\\ndisagreement to reconcile" in META_SYSTEM_PROMPT or \
+           "disagreement to reconcile" in META_SYSTEM_PROMPT

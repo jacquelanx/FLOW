@@ -298,7 +298,7 @@ flow run --data examples/demo \
 # A real run with your data + a model (8 independent trajectories + consensus):
 flow run --data path/to/your/project \
   --question "<your research question>" \
-  --provider gemini --model gemini-2.0-flash \
+  --provider gemini --model gemini-3.6-flash \
   --trajectories 8
 
 # Start just the backend API (e.g. to use the web app):
@@ -315,14 +315,103 @@ writes a folder with `notebook.ipynb`, `actions.jsonl`, `answer.txt`, `run.json`
 
 1. **First-run script** (your project's `first_run.py`) runs first, inside the sandbox, and
    writes result tables (QC, gating, populations, marker expression, …).
-2. Those tables are loaded into the agent's notebook, and the agent **interprets** them: reviews
+2. **Diagnostics script** (optional — `first_run_diagnostics.py`) runs next, under the same
+   `--data / --out / --plots` contract. It audits the first-run's own parameter choices and
+   writes its own tables. It never modifies the first-run's numbers. See below.
+3. Those tables are loaded into the agent's notebook, and the agent **interprets** them: reviews
    the gating, checks QC, compares timepoints, makes plots, and writes a conclusion. It has
    exactly two actions — write/run a notebook cell, and submit its answer.
-3. **Several agents** do this independently in isolated sandboxes; a final step synthesizes their
+4. **Several agents** do this independently in isolated sandboxes; a final step synthesizes their
    conclusions into **one consensus** answer (pure text — it runs no code and reads no data).
 
 FLOW is a **reproducible scaffold + interpretive agent**: the script does the heavy lifting
 deterministically; the agent does the interpretation.
+
+### Cutoff diagnostics ("picture to numbers")
+
+The agent **cannot see images.** Figures are saved to disk and summarized to it as a filename —
+so an instruction like "open the overlay plots and judge whether each cutoff is reasonable" is
+one it can only answer by guessing. The diagnostics pass closes that gap for the anchored CAR-NK
+template by computing, from the same event arrays that produced those figures, the quantities a
+cytometrist reads off them — in the figures' own coordinate system, so every number stays
+checkable by eye against the PNG.
+
+The shipped analysis spec is written to match: it asks for the cutoff judgement from
+`diagnostics_cutoff_audit.csv`, `diagnostics_transfer.csv` and `diagnostics_uncertainty.csv`, and
+says plainly that the overlays are drawn for the human reader. `tests/test_no_image_instructions.py`
+enforces that — no guidance text may pair a looking verb with an image without stating that the
+image cannot be seen, and the test asserts it still catches the original instruction it was
+written for.
+
+It is installed automatically alongside the anchored first-run and organized as six tiers, each
+a distinct failure mode:
+
+| Tier | Question it answers |
+|---|---|
+| 0 · data adequacy | Enough good data to say anything? Counts, retention, Wilson intervals, within-file acquisition drift |
+| 1 · cutoff foundation | Is the ruler well made *where it was derived*? Valley evidence, trough depth, placement, derivation fingerprint |
+| 2 · transfer validity | Does the locked cutoff still hold at the other timepoints? Negative-population drift, the technical-vs-biological discriminator, 2-D gate geometry |
+| 3 · sensitivity | Does any of this change the answer? Local fragility, locked-vs-per-sample counterfactual, and a cutoff-attributable range on every headline % |
+| 4 · internal controls | Do populations with a **known** answer come out right? Host NK (CAR-negative by construction), pre-infusion donor, NT-NK and CAR-product tubes |
+| 5 · operator concordance | Does it agree with the manual gating, and at which timepoints? |
+
+Two rules hold throughout. **Drift is measured on the negative population only** — the internal
+reference biology should not move — which is what separates real NK expansion (mass moving across
+a stationary cutoff) from staining drift (the cutoff's own reference moving). And the pass
+**measures and flags; it never concludes.** Every flag carries the exact rule that produced it
+and what would resolve it, so you and the agent can both disagree with the rule.
+
+Outputs (written to the first-run's output folder, auto-loaded into the agent's notebook):
+
+- `cutoff_diagnostics_digest.txt` — **this is what the agent reads.** A bounded *index*: every
+  flag group with its full count and worst case, the reproduction check, the coverage gaps, the
+  known blind spots, and where the per-row detail lives. On a real study the prose summary runs
+  to ~265 KB while the agent's observation window is a few thousand characters and keeps only the
+  head and tail — so printing the summary deleted its middle, where the flags are. The digest is
+  sized to survive that window (see `DIGEST_MAX_CHARS`), and it never withholds a count: what it
+  cannot show, it states the number of.
+- `cutoff_diagnostics_summary.txt` — the full prose report. Flagged items with their rules, plus
+  the headline tables. Read by a human, or by the agent one section at a time.
+- `diagnostics_flags.csv` — every rule crossing, with rule, measurement and resolution hint.
+- `diagnostics_cutoff_audit.csv` — per marker at the reference timepoint.
+- `diagnostics_transfer.csv` — per marker × timepoint.
+- `diagnostics_uncertainty.csv` — every headline % with **two separately labelled** error
+  sources: cutoff-attributable and event-counting. Different remedies: more events fixes one,
+  only a better cutoff fixes the other. Quote `headline_value_pct`; tier 3 re-gates a capped
+  subsample, so the `*_at_subsample` columns are deliberately not the pipeline's reported
+  numbers (each row carries the difference, and spans are unaffected because both sides of
+  every comparison come from the same subsample).
+- `diagnostics_counterfactual.csv` — what each timepoint would have reported under its *own*
+  valley instead of the locked one. The spread of those numbers is the run-to-run drift the
+  anchoring exists to remove.
+- `diagnostics_controls.csv`, `diagnostics_concordance.csv`, `diagnostics_gate_geometry.csv`,
+  `diagnostics_metrics.csv` (tidy long, every measurement with units),
+  `diagnostics_thresholds.csv` (every rule and **where its value came from**),
+  `cutoff_diagnostics.json` (the whole report).
+
+The pass also **verifies itself**: it re-derives every reported percentage and checks it against
+the first-run's own `multilineage.csv`. The pipeline is deterministic, so agreement should be
+exact; a mismatch means the audit is describing a different gating and says so loudly.
+
+Tuning, all from `metadata.json` — no code change:
+
+```json
+{
+  "diagnostics_thresholds": { "drift_negative_sd_max": 0.4 },
+  "diagnostics_sensitivity_events": 40000,
+  "diagnostics_sensitivity_seconds": 420
+}
+```
+
+Every threshold declares its provenance — `self-calibrating` (derived from the data's own
+resampling noise), `pipeline-constant` (already encoded in the analysis code), or
+`settable-default` (a genuine scientific choice, with its rationale stated). The
+`settable-default` ones are the ones worth reviewing with your lab.
+
+**What it cannot catch**, stated plainly in every report: unanticipated population structure,
+compensation/spillover artefacts, "this plot just looks wrong to an experienced eye", and novel
+instrument failures. The overlay PNGs and the QC PDF still exist and are still worth reading —
+this makes the audit rigorous within a defined scope; it does not remove the human.
 
 ---
 

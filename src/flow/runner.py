@@ -96,6 +96,12 @@ def run_analysis(
         seed_cells=fr.cells if fr else None,
         first_run_note=fr.prompt_note if fr else "",
         system_prompt_extra=system_prompt_extra,
+        # ``/work`` in the sandbox IS ``run_dir`` on the host (bind-mounted rw), so the
+        # manifest the diagnostics write in the opening cell is readable here without a
+        # round-trip through the kernel. Absent script -> empty path -> check disabled.
+        obligations_file=(
+            (run_dir / fr.obligations_relpath) if fr and fr.obligations_relpath else None
+        ),
     )
     provider = build_provider(config.runtime.provider, config.runtime.model, temperature)
 
@@ -148,6 +154,18 @@ def run_analysis(
 TrajectoryStatusHook = Callable[[int, str, dict], None]
 BatchStepHook = Callable[[int, StepRecord], None]
 PhaseHook = Callable[[str], None]
+
+
+def _read_evidence(traj_dir: Path) -> dict[str, Any]:
+    """The trajectory's evidence-coverage record, or ``{}`` if the check was not in force."""
+    p = Path(traj_dir) / "evidence_coverage.json"
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 @dataclass
@@ -222,6 +240,9 @@ def run_batch(
                 "failure_reason": result.failure_reason,
                 "steps": len(result.steps),
                 "artifact_dir": str(traj_dir),
+                # Carried into the consensus so the synthesis can say what an analyst did
+                # not read, instead of reconciling two answers as if both were complete.
+                "evidence": _read_evidence(traj_dir),
             }
             status = "completed" if result.submitted else "failed"
         except Exception as e:  # kernel/start failure — isolate it, keep going
@@ -232,6 +253,7 @@ def run_batch(
                 "failure_reason": str(e),
                 "steps": 0,
                 "artifact_dir": str(traj_dir),
+                "evidence": {},
             }
             status = "error"
         results.append(summary)

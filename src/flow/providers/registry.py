@@ -59,12 +59,42 @@ SUPPORTED_PROVIDERS = [
 MODEL_CATALOG: dict[str, list[str]] = {
     "mock": ["mock"],
     "ollama": ["qwen2.5-coder", "qwen2.5", "llama3.1", "deepseek-coder-v2"],
-    "gemini": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+    # Every id previously listed here (2.0-flash, 2.5-flash, 1.5-flash, 1.5-pro) is now dead:
+    # 2.5-flash answers 404 "no longer available" and the rest are absent from the live model
+    # list. These were verified against GET /v1beta/models and probed 5x each with retries
+    # disabled. Ordered by what a FREE-TIER key can actually sustain, which is NOT the same as
+    # newest-first: the newest Flash has a tiny free-tier request quota (3.7-flash managed 2/5
+    # calls, and the "-latest" alias, which tracks whichever Flash is newest, managed 0/5 —
+    # both 429 RESOURCE_EXHAUSTED). Pro models are zero-quota on the free tier
+    # ("free_tier_requests, limit: 0"), so they need billing enabled.
+    # Ordered by DAILY free-tier request budget, because a FLOW trajectory spends one request
+    # per step (up to max_steps) and a model that cannot cover that never finishes:
+    #   3.1-flash-lite  35+ requests/day observed, no cap hit  -> can complete a trajectory
+    #   3.6-flash       "free_tier_requests, limit: 20"        -> dies mid-trajectory
+    #   3.7-flash       tighter still (2/5 calls succeeded)
+    #   *-latest        aliases the newest, so it inherits the tightest budget (0/5)
+    #   *-pro           "limit: 0" on the free tier           -> needs billing
+    # With billing enabled the order should be reversed: the larger models are more capable,
+    # and 3.6-flash handled FLOW's context and tool calls cleanly for as long as its quota
+    # lasted. Latency is a rounding error next to the daily cap.
+    "gemini": [
+        "gemini-3.1-flash-lite",   # ~1s/call,  free-tier budget covers a full run
+        "gemini-3.6-flash",        # ~10s/call, more capable, 20 requests/day free
+        "gemini-3.5-flash",        # ~5s/call
+        "gemini-3.7-flash",        # newest; free-tier budget too small to be usable
+    ],
+    # Groq retires model ids without notice — the llama-3.3/3.1 ids that used to head this
+    # list now 404 with model_not_found. These were verified against GET /v1/models and each
+    # completed a trajectory through the ReAct loop. Note that groq/compound* are excluded on
+    # purpose: they reject tool calling outright ("`tool calling` is not supported with this
+    # model"), which FLOW's loop requires. Also note the FREE-tier request-size cap: a free key
+    # rejects any request over ~8k tokens with HTTP 413 "Request too large" (a permanent
+    # rejection, not a retryable 429), and a FLOW trajectory starts around 6k tokens and grows
+    # every step. Groq needs a paid tier for this workload regardless of which model is chosen.
     "groq": [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
         "openai/gpt-oss-120b",
-        "moonshotai/kimi-k2-instruct",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
     ],
     "openrouter": [
         "meta-llama/llama-3.3-70b-instruct",

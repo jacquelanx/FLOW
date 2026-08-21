@@ -56,8 +56,8 @@ from anchored.run import process_patient  # noqa: E402
 
 DATA_DICTIONARY = """\
 FLOW anchored first-run outputs (deterministic; the agent INTERPRETS these — it must NOT
-recompute the composition numbers; it MAY inspect unified_cutoffs.csv + the overlay plots to
-AUDIT the cutoff, and may refine a flagged timepoint in its own notebook).
+recompute the composition numbers; it AUDITS the cutoff from unified_cutoffs.csv and the
+diagnostics MEASUREMENTS, and may refine a flagged timepoint in its own notebook).
 
 multilineage.csv     — one row per timepoint: population %s on the UNIFIED (anchored) cutoff.
                        Key columns: '%B (of lymph)', '%T (of lymph)', '%NK (of lymph)',
@@ -69,6 +69,11 @@ composition_shift.csv— per population: value at each timepoint + Δ from the r
                        and Δ from the previous timepoint (the cellular composition SHIFT).
 compare_manual.csv   — (if a manual CSV was provided) auto vs. manual %, delta, abs_delta.
 plots/overlay_*.png  — per marker, all timepoints on a shared axis with the unified cut drawn.
+                       Drawn for the HUMAN reader: you cannot see their contents, so do not
+                       describe one. The quantities one would take off them are measured for
+                       you — mode positions, mode gap, trough location and depth, and density
+                       at the cutoff in diagnostics_cutoff_audit.csv; per-timepoint drift of
+                       the same distributions in diagnostics_transfer.csv.
 """
 
 

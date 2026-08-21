@@ -6,9 +6,16 @@ Every run produces a self-contained directory:
   * answer.txt        — the submitted conclusion (or empty if the run failed).
   * run.json          — metadata: question, provider/model, image digest, limits,
                         timings, step count, success flag, failure reason.
+  * evidence_coverage.json — which of the first-run's obligations the answer discharged, and
+                        which diagnostics tables were opened. Written only when the project
+                        left a manifest to check against.
   * plots/            — figures the agent saved (PNG), summarized as [image] to the agent.
 
 This is the audit trail required by the safety model.
+
+``evidence_coverage.json`` is part of that audit trail rather than a metric. An answer that
+skipped half its evidence and an answer that had none to skip read identically once the
+trajectory is over; this file is what tells them apart after the fact.
 """
 
 from __future__ import annotations
@@ -42,6 +49,11 @@ class RunMetadata:
     submitted: bool = False
     failure_reason: Optional[str] = None
     network: str = "none"
+    # Obligations the answer left undischarged, and whether the check was active at all.
+    # ``None`` for both means the question was never asked (no manifest), which is not the
+    # same as a clean sweep — see ``evidence_coverage.json``.
+    obligations_total: Optional[int] = None
+    obligations_undischarged: Optional[int] = None
 
 
 class Trajectory:
@@ -74,7 +86,27 @@ class Trajectory:
         meta.steps_taken = len(result.steps)
         meta.submitted = result.submitted
         meta.failure_reason = result.failure_reason
+
+        coverage = self.write_evidence_coverage(env)
+        if coverage.get("enforced"):
+            meta.obligations_total = coverage.get("obligations_total")
+            meta.obligations_undischarged = coverage.get("obligations_undischarged")
         (self.dir / "run.json").write_text(json.dumps(asdict(meta), indent=2, default=str))
+
+    def write_evidence_coverage(self, env: NotebookEnvironment) -> dict[str, Any]:
+        """Persist the run's evidence coverage; returns it (empty dict if unavailable).
+
+        Written only when a manifest was actually in force. Emitting a file that says
+        ``0 undischarged`` for a project with nothing to discharge would make an ungated run
+        indistinguishable from a thorough one.
+        """
+        getter = getattr(env, "evidence_coverage", None)
+        coverage = getter() if callable(getter) else {}
+        if coverage.get("enforced"):
+            (self.dir / "evidence_coverage.json").write_text(
+                json.dumps(coverage, indent=2, default=str)
+            )
+        return coverage
 
     # --- reads for the API ---
     def read_run_json(self) -> dict[str, Any]:

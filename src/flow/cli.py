@@ -148,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--data", required=True, help="Project/data directory.")
     pr.add_argument("--question", help="Research question (overrides config.yaml).")
     pr.add_argument("--provider", help="mock | ollama | gemini | groq | openrouter | deepseek | openai")
-    pr.add_argument("--model", help="Model id (e.g. gemini-2.0-flash, qwen2.5-coder).")
+    pr.add_argument("--model", help="Model id (e.g. gemini-3.6-flash, qwen2.5-coder).")
     pr.add_argument("--meta-provider", dest="meta_provider",
                     help="Provider for the consensus synthesis (default: same as --provider).")
     pr.add_argument("--meta-model", dest="meta_model",

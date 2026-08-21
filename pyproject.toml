@@ -42,6 +42,9 @@ flow = [
     # package into a project — both need these present in the installed/built package.
     "firstrun/anchored/*.py",
     "firstrun/anchored/*.json",
+    # Cutoff diagnostics subpackage. provision_anchored copies the whole anchored/ tree into a
+    # project, so this must ship with it or `import anchored.diagnostics` fails in the sandbox.
+    "firstrun/anchored/diagnostics/*.py",
 ]
 
 [tool.pytest.ini_options]

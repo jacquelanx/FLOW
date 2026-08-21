@@ -35,6 +35,12 @@ export default function ResultsDashboard({
   const running = !["completed", "failed", "error"].includes(status);
   const nSubmitted = batch.trajectories.filter((t) => t.submitted).length;
 
+  // Only trajectories whose first-run actually left obligations can report coverage. A null
+  // total means the question was never asked, so those rows show "—" rather than a clean
+  // score they did not earn.
+  const gated = batch.trajectories.filter((t) => t.obligations_total != null);
+  const nUnread = gated.reduce((n, t) => n + (t.obligations_undischarged ?? 0), 0);
+
   return (
     <div className="page">
       <header className="page-head">
@@ -80,6 +86,18 @@ export default function ResultsDashboard({
               {consensus.consensus ? (consensus.synthesized ? "synthesized" : "single") : "—"}
             </span>
           </div>
+          {gated.length > 0 && (
+            <div className="stat">
+              <span className="stat-label">Evidence unread</span>
+              <span className="stat-value">
+                {nUnread}
+                <span className="muted" style={{ fontWeight: 400 }}>
+                  {" "}
+                  / {gated.reduce((n, t) => n + (t.obligations_total ?? 0), 0)}
+                </span>
+              </span>
+            </div>
+          )}
           <div className="stat">
             <span className="stat-label">Model</span>
             <span className="stat-value small" title={batch.run.model}>
@@ -147,6 +165,7 @@ export default function ResultsDashboard({
               <th>#</th>
               <th>Status</th>
               <th>Steps</th>
+              {gated.length > 0 && <th>Evidence</th>}
               <th>Conclusion</th>
             </tr>
           </thead>
@@ -165,6 +184,19 @@ export default function ResultsDashboard({
                     )}
                   </td>
                   <td>{t.steps}</td>
+                  {gated.length > 0 && (
+                    <td>
+                      {t.obligations_total == null ? (
+                        <span className="muted">—</span>
+                      ) : t.obligations_undischarged ? (
+                        <span className="badge err">
+                          {t.obligations_undischarged}/{t.obligations_total} unread
+                        </span>
+                      ) : (
+                        <span className="badge ok">all read</span>
+                      )}
+                    </td>
+                  )}
                   <td>
                     <span className="caret">
                       <span className={`tri ${isOpen ? "open" : ""}`} aria-hidden="true" />
@@ -176,7 +208,12 @@ export default function ResultsDashboard({
             })}
           </tbody>
         </table>
-        <p className="hint">Click a row to expand its full conclusion.</p>
+        <p className="hint">
+          Click a row to expand its full conclusion.
+          {gated.length > 0 &&
+            " “Evidence” counts measurements this project’s first-run required the analyst to" +
+              " consult; unread items are listed in each trajectory’s evidence_coverage.json."}
+        </p>
       </section>
 
       <div className="card">

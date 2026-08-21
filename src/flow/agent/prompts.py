@@ -27,7 +27,10 @@ interpreting it. Use auxiliary tables only if and how the analysis warrants.
   • Install additional libraries only if the environment allows network access; otherwise \
 work with what is available.
   • Inspect results, sanity-check them, and iterate. Produce figures and summary tables as \
-useful evidence (figures are saved automatically; you will see them summarized, not inline).
+useful evidence — but you CANNOT SEE image content. A figure you save is reported back to you \
+as a filename only, so it is evidence for the human reader, not for you. Never describe what a \
+plot looks like, and never claim to have examined one; if a judgement would come from looking \
+at a figure, compute the numbers you would have read off it and judge from those.
   • When the analysis robustly answers the question, call submit_answer with a clear \
 conclusion AND the key quantitative evidence and the reasoning that supports it.
 
