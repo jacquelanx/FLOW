@@ -7,7 +7,6 @@ PHI-safe: titles use study label only (e.g. UPN27). Never include MRN/name.
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -214,7 +213,7 @@ td:first-child{{text-align:left}}
   <h1>Flow Cytometry QC — {study_label}</h1>
   <p>FSA×SSA-first automated gating &nbsp;|&nbsp; Manual overlay (dotted) &nbsp;|&nbsp;
      De-identified study label only &nbsp;|&nbsp;
-     {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+     deterministic comparison report</p>
 </div>
 <div class="body">
   {summary_html}

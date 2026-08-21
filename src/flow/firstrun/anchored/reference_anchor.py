@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from datetime import datetime, timezone
 
 import numpy as np
 
@@ -519,7 +518,7 @@ def build_operator_anchor(
             "verified_pct": {k: pct.get(k) for k in AUTO_KEYS.values()},
         },
         "calibration_mae_pp": round(float(score), 3),
-        "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_utc": "NOT_RECORDED_DETERMINISTIC_RUN",
         "locked": {
             "fsc_lo": cuts["fsc_lo"],
             "fsc_hi": cuts["fsc_hi"],

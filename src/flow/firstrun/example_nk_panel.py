@@ -57,6 +57,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.colors import LinearSegmentedColormap, LogNorm  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -82,6 +84,135 @@ PHENOTYPE_DETECTORS = [
     "APC-Cy7-A", "Qdot 800-A", "PE-Cy5-A", "PE-Texas Red-A",
     "Alexa Fluor 488-A", "PE-Cy7-A", "Alexa Fluor 647-A", "BV510-A",
 ]
+
+# Visual contract for genuine bivariate flow-channel event plots. The display is
+# deliberately separate from gate derivation: it colors the observed event density,
+# overlays fixed density contours, and then draws a clearly labeled density envelope
+# for the already-accepted events.
+# Semantic embeddings such as UMAP remain cluster-colored because their colors encode
+# cluster identity rather than cytometry density.
+FLOW_DENSITY_CONTOUR_FRACTIONS = (0.20, 0.40, 0.65)
+FLOW_HEAT_DENSITY_CMAP = LinearSegmentedColormap.from_list(
+    "flow_heat_density",
+    (
+        "#ffffff",
+        "#dbeafe",
+        "#60a5fa",
+        "#22d3ee",
+        "#fde047",
+        "#f97316",
+        "#b91c1c",
+    ),
+    N=256,
+)
+FLOW_HEAT_DENSITY_CMAP.set_bad("white")
+
+
+def _smooth_density_grid(values, passes=3):
+    """Small dependency-free Gaussian-like blur for a 2D histogram."""
+    out = np.asarray(values, dtype=float)
+    for _ in range(max(0, int(passes))):
+        p = np.pad(out, 1, mode="edge")
+        out = (
+            p[:-2, :-2] + 2 * p[:-2, 1:-1] + p[:-2, 2:]
+            + 2 * p[1:-1, :-2] + 4 * p[1:-1, 1:-1] + 2 * p[1:-1, 2:]
+            + p[2:, :-2] + 2 * p[2:, 1:-1] + p[2:, 2:]
+        ) / 16.0
+    return out
+
+
+def _heat_scatter_density(ax, x, y, bins=150, max_events=120_000):
+    """Render a deterministic flow heat-scatter field plus nested contours.
+
+    This is presentation-only: it never derives or changes a gate. The returned grid
+    allows the caller to overlay an accepted-population boundary on the same axes.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    finite = np.isfinite(x) & np.isfinite(y)
+    x, y = x[finite], y[finite]
+    if len(x) < 10:
+        return None
+    if len(x) > max_events:
+        idx = np.random.RandomState(2701).choice(len(x), max_events, replace=False)
+        x, y = x[idx], y[idx]
+
+    xmin, xmax = float(x.min()), float(x.max())
+    ymin, ymax = float(y.min()), float(y.max())
+    xpad = 0.02 * (xmax - xmin + 1e-9)
+    ypad = 0.02 * (ymax - ymin + 1e-9)
+    x_range = (xmin - xpad, xmax + xpad)
+    y_range = (ymin - ypad, ymax + ypad)
+    H, xe, ye = np.histogram2d(x, y, bins=bins, range=(x_range, y_range))
+    H = _smooth_density_grid(H.T)
+    positive = H[H > 0]
+    if not len(positive):
+        return None
+
+    vmax = float(H.max())
+    vmin = max(float(np.percentile(positive, 3)), np.finfo(float).tiny)
+    if vmax <= vmin:
+        vmin = max(vmax * 0.1, np.finfo(float).tiny)
+    ax.pcolormesh(
+        xe,
+        ye,
+        np.ma.masked_where(H <= 0, H),
+        cmap=FLOW_HEAT_DENSITY_CMAP,
+        norm=LogNorm(vmin=vmin, vmax=max(vmax, vmin * (1.0 + 1e-6))),
+        shading="auto",
+        rasterized=True,
+        zorder=1,
+    )
+
+    xc = 0.5 * (xe[:-1] + xe[1:])
+    yc = 0.5 * (ye[:-1] + ye[1:])
+    levels = np.asarray(FLOW_DENSITY_CONTOUR_FRACTIONS) * vmax
+    levels = np.unique(levels[(levels > 0) & (levels < vmax)])
+    if len(levels):
+        ax.contour(
+            xc,
+            yc,
+            H,
+            levels=levels,
+            colors="#303030",
+            linewidths=np.linspace(0.65, 1.05, len(levels)),
+            alpha=0.78,
+            zorder=2,
+        )
+    ax.set_xlim(*x_range)
+    ax.set_ylim(*y_range)
+    return {"xc": xc, "yc": yc, "xe": xe, "ye": ye}
+
+
+def _overlay_accepted_density_envelope(ax, x, y, accepted, grid, color="#2457FF"):
+    """Overlay a 4%-of-peak density envelope for already-accepted events.
+
+    This is a QC display of the accepted population, not the analytical decision
+    boundary and not an assertion that every accepted event lies inside the curve.
+    """
+    if grid is None:
+        return False
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    accepted = np.asarray(accepted, dtype=bool)
+    keep = accepted & np.isfinite(x) & np.isfinite(y)
+    if keep.sum() < 10:
+        return False
+    H, _, _ = np.histogram2d(x[keep], y[keep], bins=(grid["xe"], grid["ye"]))
+    H = _smooth_density_grid(H.T)
+    if H.max() <= 0:
+        return False
+    ax.contour(
+        grid["xc"],
+        grid["yc"],
+        H,
+        levels=[0.04 * float(H.max())],
+        colors=[color],
+        linewidths=[2.1],
+        alpha=1.0,
+        zorder=4,
+    )
+    return True
 
 
 # ── FCS I/O ───────────────────────────────────────────────────────────────────
@@ -425,16 +556,34 @@ def _safe(s):
 
 # ── Gating plots ──────────────────────────────────────────────────────────────
 def gating_plot(raw_df, cd45_mask, lymph_idx_in_cd45, thresholds, timepoint, plots_dir):
-    """A 4-panel gating overview: FSC/SSC lymph gate, CD45, CD3, and CD56 histograms w/ gates."""
+    """A 4-panel overview: heat-density FSC/SSC gate plus three gated histograms."""
     try:
         os.makedirs(plots_dir, exist_ok=True)
         cd45_raw = raw_df[cd45_mask].reset_index(drop=True)
         fig, ax = plt.subplots(1, 4, figsize=(15, 3.6))
         lym = np.zeros(len(cd45_raw), dtype=bool)
         lym[lymph_idx_in_cd45] = True
-        ax[0].scatter(cd45_raw["FSC-A"], cd45_raw["SSC-A"], s=1,
-                      c=np.where(lym, "tab:blue", "lightgrey"))
-        ax[0].set(xlabel="FSC-A", ylabel="SSC-A", title="Lymphocyte gate (CD45+live)")
+        fsc = cd45_raw["FSC-A"].to_numpy(dtype=float)
+        ssc = cd45_raw["SSC-A"].to_numpy(dtype=float)
+        grid = _heat_scatter_density(ax[0], fsc, ssc)
+        envelope_drawn = _overlay_accepted_density_envelope(ax[0], fsc, ssc, lym, grid)
+        if grid is None:
+            ax[0].text(0.5, 0.5, "insufficient events", ha="center", va="center",
+                       transform=ax[0].transAxes, color="0.4")
+        handles = [
+            Line2D([0], [0], color="#303030", lw=1.0,
+                   label="parent density: 20/40/65%"),
+        ]
+        if envelope_drawn:
+            handles.append(Line2D([0], [0], color="#2457FF", lw=2.1,
+                                  label="accepted-event envelope: 4%"))
+        ax[0].legend(handles=handles, loc="upper right", fontsize=8.0,
+                     framealpha=0.88, borderpad=0.3)
+        ax[0].set(
+            xlabel="FSC-A",
+            ylabel="SSC-A",
+            title="Lymph selection QC (CD45+live)",
+        )
         for a, det, key in [(ax[1], "BV510-A", "cd45"), (ax[2], "APC-Cy7-A", "cd3"),
                             (ax[3], "PE-Texas Red-A", "cd56")]:
             if det in raw_df.columns:
