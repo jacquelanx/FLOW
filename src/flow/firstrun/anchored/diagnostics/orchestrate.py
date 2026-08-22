@@ -73,13 +73,21 @@ def _load_anchor(out_dir: Path, explicit: Optional[str | Path]) -> dict[str, Any
         if not p.exists():
             raise FileNotFoundError(f"diagnostics: anchor file not found: {p}")
         return json.loads(p.read_text())
-    p = out_dir / ANCHOR_FILENAME
-    if not p.exists():
+    candidates = (
+        out_dir / "outputs" / "provenance" / ANCHOR_FILENAME,
+        out_dir / ANCHOR_FILENAME,
+    )
+    p = next((candidate for candidate in candidates if candidate.exists()), None)
+    if p is None:
         hits = sorted(out_dir.glob("*operator_anchor*.json"))
+        hits.extend(sorted((out_dir / "outputs" / "provenance").glob(
+            "*operator_anchor*.json"
+        )))
         if not hits:
             raise FileNotFoundError(
-                f"diagnostics: no {ANCHOR_FILENAME} in {out_dir}. The anchored first-run writes "
-                "it; without the anchor there are no locked cutoffs to audit."
+                f"diagnostics: no {ANCHOR_FILENAME} in {out_dir} or its governed "
+                "outputs/provenance directory. The anchored first-run writes it; without "
+                "the anchor there are no locked cutoffs to audit."
             )
         p = hits[0]
     return json.loads(p.read_text())

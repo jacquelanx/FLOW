@@ -29,6 +29,7 @@ results. It works in two stages:
 - [Safety & privacy (please read for patient data)](#safety--privacy-please-read-for-patient-data)
 - [Troubleshooting](#troubleshooting)
 - [Limitations](#limitations)
+- [Governed flow-automation first run](docs/FLOW_AUTOMATION_V2.md)
 
 ---
 
@@ -256,6 +257,12 @@ Two parts:
   seeds a worked **example** you can edit, or you can **upload your own** `.py`. It's run as
   `python first_run.py --data /data --out OUT --plots PLOTS`, reads your data, and writes result
   tables the agent then interprets. Edit it to match your assay and click **Save script**.
+  Genuine bivariate flow-channel panels follow one visual contract: a density-colored heat
+  field and nested 20/40/65% density contours, with actual gate geometry overlaid when it is
+  available. Membership-only selections use a clearly labeled accepted-event density envelope
+  instead. Plain point scatter is reserved for semantic embeddings such as cluster-colored UMAP.
+  Rectangular and quadrant gates shade the retained population with a directly labeled colored
+  box at 0.20 opacity; irregular density gates retain their true non-rectangular geometry.
 - **Analysis spec** — describe your panel (which detector = which marker), the populations of
   interest, the comparisons you care about, and what the write-up should include. This is turned
   into instructions that steer how the agent interprets the results. Click **Save & continue**.

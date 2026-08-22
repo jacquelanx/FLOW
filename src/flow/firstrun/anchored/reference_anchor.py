@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from datetime import datetime, timezone
 
 import numpy as np
 
-from .fcs_io import load_xform, resolve_channels
+from .fcs_io import inspect_fcs_metadata, load_xform, resolve_channels
+from .control_compensation import candidate_for_acquisition
 from .gates import (
     file_signals, lymph_scatter_gate, singlet_mask, gate_with, percentages,
     soft_lock_scatter, robust_ld_cut, robust_cd45_cut, robust_cd19_cut,
@@ -405,6 +405,7 @@ def build_operator_anchor(
     out_path: str | Path | None = None,
     subsample: int = 200_000,
     fit_donor_car: bool = True,
+    control_repository: dict | None = None,
 ) -> dict:
     """Build operator anchor calibrated to manual Baseline (+ optional Donor/CAR fit)."""
     patient_dir = Path(patient_dir)
@@ -430,7 +431,19 @@ def build_operator_anchor(
     if ref_file is None:
         raise FileNotFoundError(f"No FCS for {reference_tp} in {fcs_dir}")
 
-    df, ntot = load_xform(ref_file, subsample=subsample)
+    def control_candidate(path):
+        audit = inspect_fcs_metadata(path)
+        return candidate_for_acquisition(
+            control_repository or {},
+            str(audit.get("acquisition_id") or "UNASSIGNED"),
+            specimen_voltages=audit.get("detector_voltages"),
+            require_voltage_match=True,
+        )
+
+    df, ntot = load_xform(
+        ref_file, subsample=subsample,
+        control_derived_candidate=control_candidate(ref_file),
+    )
     print(f"[anchor] fitting {pid} {ref_file.name} (n={ntot:,}) → {target}", flush=True)
 
     cuts, got, score = calibrate_reference_to_manual(df, ch, target, verbose=True)
@@ -467,7 +480,10 @@ def build_operator_anchor(
             if tp is None:
                 continue
             try:
-                dfi, _ = load_xform(f, subsample=subsample)
+                dfi, _ = load_xform(
+                    f, subsample=subsample,
+                    control_derived_candidate=control_candidate(f),
+                )
                 pairs.append((f.name, dfi))
             except Exception:
                 continue
@@ -519,7 +535,7 @@ def build_operator_anchor(
             "verified_pct": {k: pct.get(k) for k in AUTO_KEYS.values()},
         },
         "calibration_mae_pp": round(float(score), 3),
-        "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_utc": "NOT_RECORDED_DETERMINISTIC_RUN",
         "locked": {
             "fsc_lo": cuts["fsc_lo"],
             "fsc_hi": cuts["fsc_hi"],

@@ -2,21 +2,47 @@
 
 What it does:
   1. Pick a REFERENCE timepoint (pre-infusion / Baseline).
-  2. Derive ONE cutoff per marker there — from the negative population's leftmost peak and
-     first valley — calibrating to the operator's manual gating when a manual CSV is present.
-  3. LOCK the scatter + lineage cuts and TRANSFER them to every timepoint (with the
-     NK-dominant rule for engrafted samples). Composition numbers therefore come from ONE
-     deterministic anchored run — the agent interprets them, it does not recompute them.
+  2. Derive a reference anchor and explicit transfer policy, calibrating to the operator's
+     manual gating when an eligible manual CSV is present.
+  3. Apply the declared reference, soft-lock, and per-file refinement rules once. The exact
+     applied threshold and provenance are emitted for every file and gate; the agent
+     interprets the deterministic run and does not recompute it.
 
 FLOW first-run contract:
     python first_run.py --data <DATA_DIR> --out <OUT_DIR> --plots <PLOTS_DIR>
 
-Outputs written to --out (every CSV is auto-loaded into the agent's notebook):
-  * ``multilineage.csv``       — composition % per timepoint on the unified cutoff.
-  * ``unified_cutoffs.csv``    — the one cutoff per marker + how it was derived (auditable).
+Outputs written below ``--out/outputs``:
+  * ``tables/multilineage.csv`` — composition % per timepoint on the unified cutoff.
+  * ``unified_cutoffs.csv``    — compatibility summary of reference values/transfer policy.
+  * ``gate_parameters.csv``    — exact applied cutoff, operator, channel and provenance per file.
   * ``composition_shift.csv``  — how each population moves across timepoints.
+  * ``temporal_cell_type_summary.csv`` — percentage and gated-event-count changes with
+                                         explicit denominators and abundance limitations.
   * ``compare_manual.csv``     — auto vs. manual Δ per metric (only if a manual CSV exists).
-Plus, under --plots: ``overlay_<marker>.png`` (all timepoints, shared axis, unified cut).
+  * ``reports/QC_Report_<study>.pdf`` — full gate sequence; bivariate panels use deterministic
+                                  heat-scatter fields with 20/40/65% density contours;
+                                  paired scatter panels distinguish the all-event viable gate
+                                  from Live-CD45 lymph-density geometry.
+  * ``reports/Interactive_Longitudinal_QC_<study>.html`` — interactive percentage dashboard;
+                                      denominators are explicit and it is not an HTML rendering
+                                      of the composite QC PDF.
+  * ``tables/lymph_density_geometry.csv`` — fitted Live-CD45 FSC/SSC mode centers, low-SSC mode,
+                                      and applied-gate retention (diagnostic only).
+  * ``reports/report_page_index.csv`` — composite page number, timepoint, and named companion PDF.
+  * ``reports/pages/pdf/*.pdf`` — every composite page as a separately named PDF.
+  * ``reports/Longitudinal_Cell_Composition_<study>.pdf`` — percentages above and exact-date
+                                                     ALC-calibrated K/uL estimates below;
+                                                     gated counts are the fallback.
+  * ``reports/Acquisition_Cleaning_Sensitivity_<study>.pdf`` — canonical versus deterministic
+                                                     Time-cleaned sensitivity for flagged files.
+  * ``multilineage_time_cleaned_sensitivity.csv`` and
+    ``acquisition_cleaning_population_comparison.csv`` — before/after population results using
+                                                     the same gates without refitting.
+  * ``membership/time_cleaning_excluded_events.csv.gz`` — exact candidate event IDs removed
+                                                     only in the sensitivity analysis.
+Plus, under ``outputs/plots``: ``overlay_<marker>.png`` (all timepoints, shared axis, unified cut).
+Governance: ``first_run_bundle.json`` content-addresses inputs, source, configuration,
+and generated artifacts.
 
 Configuration (read from the dataset's ``metadata.json`` — changeable without touching FLOW):
   * ``reference_timepoint``  (default "Baseline")            — D2
@@ -43,37 +69,61 @@ if str(_HERE) not in sys.path:
 import pandas as pd  # noqa: E402
 
 from anchored.compare import compare, load_manual, summarize  # noqa: E402
+from anchored.calibrate import classify_file  # noqa: E402
 from anchored.manual_check import (  # noqa: E402
     ManualGatingError, check_manual_gating, coverage_note,
 )
-from anchored.fcs_io import load_xform, resolve_channels  # noqa: E402
+from anchored.fcs_io import inspect_fcs_metadata, load_xform, resolve_channels  # noqa: E402
+from anchored.control_compensation import (  # noqa: E402
+    build_control_repository, candidate_for_acquisition,
+    infer_control_fluorescence_channels,
+)
+from anchored.evidence import build_first_run_bundle  # noqa: E402
 from anchored.flow_outputs import (  # noqa: E402
     build_negative_anchor, histogram_overlays, write_composition_shift, write_unified_cutoffs,
 )
+from anchored.output_layout import FirstRunOutputLayout  # noqa: E402
 from anchored.reference_anchor import build_operator_anchor, load_anchor  # noqa: E402
 from anchored.run import process_patient  # noqa: E402
 
 
 DATA_DICTIONARY = """\
 FLOW anchored first-run outputs (deterministic; the agent INTERPRETS these — it must NOT
-recompute the composition numbers; it AUDITS the cutoff from unified_cutoffs.csv and the
-diagnostics MEASUREMENTS, and may refine a flagged timepoint in its own notebook).
+recompute the composition numbers; it AUDITS the cutoff, deterministic diagnostic
+measurements, policy summary, exact gate-parameter table, and plots. Any refinement is a
+separate governed shadow rather than a mutation of the canonical run).
 
-multilineage.csv     — one row per timepoint: population %s on the UNIFIED (anchored) cutoff.
+outputs/tables/multilineage.csv
+                      — one row per timepoint: population %s on the UNIFIED cutoff.
                        Key columns: '%B (of lymph)', '%T (of lymph)', '%NK (of lymph)',
                        '%CD4 (of lymph)', '%CD8 (of lymph)', '%Donor NK (of lymph)',
                        '%CAR+ (of Donor NK)', plus event counts and QC (donor_reliable, ...).
-unified_cutoffs.csv  — the single cutoff used for every marker, its channel, whether it is
-                       locked/derived, the reference timepoint, and how it was derived.
+unified_cutoffs.csv  — reference values and transfer-policy summary (legacy filename).
+gate_parameters.csv  — exact file-level applied values, comparison operators, semantic roles,
+                       and provenance. This is the authoritative threshold table.
 composition_shift.csv— per population: value at each timepoint + Δ from the reference timepoint
                        and Δ from the previous timepoint (the cellular composition SHIFT).
+temporal_cell_type_summary.csv
+                      — one row per configured region and timepoint: percentage, explicit
+                        denominator, gated-event count, changes from reference/previous,
+                        and exact-date ALC-calibrated K/uL where available.
 compare_manual.csv   — (if a manual CSV was provided) auto vs. manual %, delta, abs_delta.
-plots/overlay_*.png  — per marker, all timepoints on a shared axis with the unified cut drawn.
-                       Drawn for the HUMAN reader: you cannot see their contents, so do not
-                       describe one. The quantities one would take off them are measured for
-                       you — mode positions, mode gap, trough location and depth, and density
-                       at the cutoff in diagnostics_cutoff_audit.csv; per-timepoint drift of
-                       the same distributions in diagnostics_transfer.csv.
+outputs/plots/overlay_*.png
+                      — per marker, all timepoints on a shared axis with the unified cut drawn.
+                       These plots are for a HUMAN reader. The quantities a reader would take
+                       from them are measured in
+                       diagnostics_cutoff_audit.csv and diagnostics_transfer.csv; do not
+                       claim visual observations unless image pixels were supplied.
+outputs/reports/report_page_index.csv and outputs/reports/pages/pdf/*.pdf
+                      — named page-level companions for the composite QC report.
+lymph_density_geometry.csv
+                      — deterministic Live-CD45 density-mode diagnostics plotted in panel 2;
+                        never used to change gate membership or reported percentages.
+multilineage_time_cleaned_sensitivity.csv
+                      — separately labeled Time-cleaned sensitivity using the canonical gate
+                        parameters without refitting; never replaces multilineage.csv.
+acquisition_cleaning_population_comparison.csv
+                      — exact canonical, cleaned, and percentage-point values per metric.
 """
 
 
@@ -196,13 +246,40 @@ def main() -> None:
     ap.add_argument("--data", required=True, help="Dataset dir (fcs/, metadata.json, ...).")
     ap.add_argument("--out", required=True, help="Where to write result CSVs.")
     ap.add_argument("--plots", default="", help="Where to write plots.")
+    ap.add_argument(
+        "--compensation-controls", default="",
+        help="Optional project-local directory containing single-stain/unstained control FCS.",
+    )
+    ap.add_argument(
+        "--analysis-contract", default="",
+        help="Optional frozen machine-readable analysis contract to hash into the bundle.",
+    )
     args = ap.parse_args()
 
     data_dir = Path(args.data).resolve()
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    plots_dir = Path(args.plots).resolve() if args.plots else (out_dir / "plots")
+    layout = FirstRunOutputLayout.create(out_dir)
+    plots_dir = Path(args.plots).resolve() if args.plots else layout.plots
     plots_dir.mkdir(parents=True, exist_ok=True)
+    compensation_control_root = (
+        Path(args.compensation_controls).resolve() if args.compensation_controls else None
+    )
+    if compensation_control_root is not None and not compensation_control_root.is_dir():
+        raise SystemExit(
+            f"anchored_nk_panel: compensation-control directory not found: "
+            f"{compensation_control_root}"
+        )
+    compensation_control_files = (
+        sorted(
+            path for path in compensation_control_root.rglob("*.fcs")
+            if classify_file(path.name) == "comp"
+        )
+        if compensation_control_root is not None else []
+    )
+    analysis_contract = Path(args.analysis_contract).resolve() if args.analysis_contract else None
+    if analysis_contract is not None and not analysis_contract.is_file():
+        raise SystemExit(f"anchored_nk_panel: analysis contract not found: {analysis_contract}")
 
     meta = _load_meta(data_dir)
     # D1/D2/D3 knobs — defaults here for now; changing them
@@ -217,6 +294,47 @@ def main() -> None:
     # this patient_dir instead of the raw --data dir.
     patient_dir = _normalize_dataset(data_dir, out_dir)
 
+    # Prepare the same compensation fallback before anchor construction. Otherwise a
+    # run-matched control-derived matrix could rescue the canonical run but the earlier
+    # reference-anchor load would fail first when embedded compensation is absent/invalid.
+    patient_fcs = sorted((patient_dir / "fcs").glob("*.fcs"))
+    anchor_preflight = {}
+    anchor_expected_channels = []
+    for path in patient_fcs:
+        if classify_file(path.name) == "comp":
+            continue
+        try:
+            audit = inspect_fcs_metadata(path)
+        except Exception:
+            continue
+        anchor_preflight[str(path.resolve())] = audit
+        if not anchor_expected_channels and audit.get("embedded_matrix_channels"):
+            anchor_expected_channels = list(audit["embedded_matrix_channels"])
+    if not anchor_expected_channels and compensation_control_files:
+        anchor_expected_channels = infer_control_fluorescence_channels(
+            compensation_control_files
+        )
+    anchor_control_repository = (
+        build_control_repository(
+            compensation_control_files, classify_file, anchor_expected_channels
+        )
+        if compensation_control_files and anchor_expected_channels else {"control_sets": []}
+    )
+
+    def control_candidate(path: Path):
+        audit = anchor_preflight.get(str(path.resolve()))
+        if audit is None:
+            try:
+                audit = inspect_fcs_metadata(path)
+            except Exception:
+                return None
+        return candidate_for_acquisition(
+            anchor_control_repository,
+            str(audit.get("acquisition_id") or "UNASSIGNED"),
+            specimen_voltages=audit.get("detector_voltages"),
+            require_voltage_match=True,
+        )
+
     manual_ref = _find_manual(patient_dir)
     use_manual = manual_ref is not None and anchor_mode in ("auto", "manual")
     if anchor_mode == "manual" and manual_ref is None:
@@ -224,7 +342,7 @@ def main() -> None:
               "falling back to negative-population anchor.", flush=True)
         use_manual = False
 
-    anchor_path = out_dir / "operator_anchor.json"
+    anchor_path = layout.provenance / "operator_anchor.json"
 
     # ── 0. Validate the manual CSV BEFORE it steers anything ──────────
     # A label the parser can't match is dropped silently downstream, which would report a
@@ -242,38 +360,45 @@ def main() -> None:
         print(f"[anchored] calibrating reference '{reference_tp}' to manual gating "
               f"({manual_ref})", flush=True)
         build_operator_anchor(patient_dir, manual_ref, reference_tp=reference_tp,
-                              out_path=anchor_path, subsample=subsample)
+                              out_path=anchor_path, subsample=subsample,
+                              control_repository=anchor_control_repository)
     else:
         print(f"[anchored] no manual calibration — negative-population anchor at "
               f"'{reference_tp}'", flush=True)
-        build_negative_anchor(patient_dir, ch, reference_tp, anchor_path, subsample=subsample)
+        build_negative_anchor(
+            patient_dir, ch, reference_tp, anchor_path, subsample=subsample,
+            control_repository=anchor_control_repository,
+        )
 
     # ── 2. Run pipeline once (deterministic) with the anchor ───────────────
     process_patient(patient_dir, out_dir=out_dir,
                     manual_ref=(manual_ref if use_manual else None),
-                    subsample=subsample, verbose=True, anchor_path=anchor_path)
+                    subsample=subsample, verbose=True, anchor_path=anchor_path,
+                    compensation_control_paths=compensation_control_files)
 
     meta_pid = meta.get("patient_study") or data_dir.name
 
     # ── 3. Adapt outputs to FLOW's standard names + add the new tables ─────
-    her_multi = out_dir / f"Multilineage_SSA_{meta_pid}.csv"
-    if not her_multi.exists():
-        cands = sorted(out_dir.glob("Multilineage_SSA_*.csv"))
-        her_multi = cands[0] if cands else None
-    if her_multi is None:
+    her_multi = layout.tables / "multilineage.csv"
+    if not her_multi.is_file():
         raise SystemExit("anchored_nk_panel: no multilineage output produced")
     multi_df = pd.read_csv(her_multi)
-    multi_df.to_csv(out_dir / "multilineage.csv", index=False)
-
+    # Preserve the established canonical CSV serialization after retiring the old
+    # Multilineage_SSA_<study>.csv alias. This is formatting normalization only.
+    multi_df.to_csv(her_multi, index=False)
     anchor = load_anchor(anchor_path)
-    write_unified_cutoffs(anchor, out_dir)
-    write_composition_shift(multi_df, out_dir, reference_tp=reference_tp)
+    applied_policy_path = layout.qc / "applied_gate_policy.json"
+    applied_policy = (
+        json.loads(applied_policy_path.read_text()) if applied_policy_path.exists() else {}
+    )
+    write_unified_cutoffs(anchor, layout.tables, applied_policy=applied_policy)
+    write_composition_shift(multi_df, layout.tables, reference_tp=reference_tp)
 
     manual_note = ""
     if use_manual:
         man = load_manual(manual_ref)
         cmp = compare(multi_df, man)
-        cmp.to_csv(out_dir / "compare_manual.csv", index=False)
+        cmp.to_csv(layout.tables / "compare_manual.csv", index=False)
         summary = summarize(cmp)
         # Always qualify the MAE with its coverage — an MAE over one of twelve timepoints
         # otherwise reads exactly like an MAE over all twelve.
@@ -295,7 +420,10 @@ def main() -> None:
     if fcs_dir.is_dir():
         for f in sorted(fcs_dir.glob("*.fcs")):
             try:
-                df, _ = load_xform(f, subsample=subsample)
+                df, _ = load_xform(
+                    f, subsample=subsample,
+                    control_derived_candidate=control_candidate(f),
+                )
                 pairs.append((f.name, df))
             except Exception as e:
                 print(f"  overlay: could not load {f.name}: {e}", flush=True)
@@ -305,7 +433,7 @@ def main() -> None:
     except Exception as e:
         print(f"  overlay plots skipped: {e}", flush=True)
 
-    with open(out_dir / "first_run_summary.txt", "w") as f:
+    with open(layout.reports / "first_run_summary.txt", "w") as f:
         f.write(DATA_DICTIONARY)
         f.write(f"\nReference timepoint: {reference_tp} | "
                 f"anchor: {'manual-calibrated' if use_manual else 'negative-population'} | "
@@ -316,11 +444,37 @@ def main() -> None:
             f.write("\n" + check.report() + "\n")
             if manual_note:
                 f.write(f"compare_manual.csv covers: {manual_note}\n")
+        f.write(
+            f"\nCompensation control evidence: "
+            f"{len(compensation_control_files)} FCS from "
+            f"{compensation_control_root or 'not supplied'}\n"
+        )
+        f.write(
+            "Time-channel exclusions are emitted only as a separately labeled sensitivity "
+            "analysis; canonical membership remains unchanged.\n"
+        )
 
+    # ── 5. Publish the typed human output package, then freeze the bundle ─────
+    layout.write_catalog(str(meta_pid))
+    source_files = [Path(__file__), *sorted((_HERE / "anchored").glob("*.py")),
+                    *sorted((_HERE / "anchored").glob("*.json"))]
+    config_files = [path for path in (
+        data_dir / "metadata.json", data_dir / "flow.csv", data_dir / "alc.csv",
+        data_dir / "cbc.csv", manual_ref, anchor_path,
+        analysis_contract,
+    ) if path is not None and Path(path).exists()]
+    bundle = build_first_run_bundle(
+        out_dir=out_dir,
+        input_files=[*_collect_fcs(data_dir), *compensation_control_files],
+        source_files=source_files,
+        config_files=config_files,
+    )
     print("\nFIRST_RUN_OK wrote", len(multi_df), "timepoints.")
-    print("Outputs: multilineage.csv, unified_cutoffs.csv, composition_shift.csv"
+    print("Outputs: outputs/reports/, outputs/tables/, outputs/qc/, outputs/membership/, "
+          "outputs/plots/, outputs/provenance/"
           + (", compare_manual.csv" if use_manual else "")
-          + ", first_run_summary.txt, plots/overlay_*.png")
+          + ", output_index.csv, first_run_bundle.json")
+    print("FirstRunBundle SHA256:", bundle["first_run_bundle_sha256"])
 
 
 if __name__ == "__main__":

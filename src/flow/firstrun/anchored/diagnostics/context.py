@@ -450,7 +450,11 @@ def controls_as_frames(controls: dict[str, tuple[str, pd.DataFrame]]) -> dict[st
 
 
 def _find_multilineage(out_dir: Path, pid: str) -> Optional[Path]:
-    for cand in (out_dir / "multilineage.csv", out_dir / f"Multilineage_SSA_{pid}.csv"):
+    for cand in (
+        out_dir / "outputs" / "tables" / "multilineage.csv",
+        out_dir / "multilineage.csv",
+        out_dir / f"Multilineage_SSA_{pid}.csv",
+    ):
         if cand.exists():
             return cand
     hits = sorted(out_dir.glob("Multilineage_SSA_*.csv"))
@@ -542,6 +546,5 @@ def reliability(n_parent: Optional[int], n_pos: Optional[int]) -> dict[str, Any]
         "min_parent": MIN_PARENT,
         "min_positive": MIN_POS,
     }
-
 
 

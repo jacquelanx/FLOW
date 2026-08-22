@@ -6,7 +6,7 @@ from __future__ import annotations
 import csv
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib
@@ -23,10 +23,14 @@ from .compare import timepoint_from_file, timepoint_sort_key
 # CD8 detector in the lab panel — kept as a local constant to avoid a
 # top-level flowkit import just to label one row.
 _CD8_CHANNEL = "PE-Cy5-5-A"
+_CD4_CHANNEL = "Alexa Fluor 700-A"
 
 
 # ── D1 fallback: anchor on the negative population, no manual gating needed ──────
-def build_negative_anchor(patient_dir, ch, reference_tp, out_path, subsample=200_000):
+def build_negative_anchor(
+    patient_dir, ch, reference_tp, out_path, subsample=200_000,
+    control_repository=None,
+):
     """Build an anchor from the reference sample's negative-population valley cuts.
 
     Derive one cutoff per marker on the reference (pre-infusion) sample using valley finders
@@ -52,10 +56,20 @@ def build_negative_anchor(patient_dir, ch, reference_tp, out_path, subsample=200
         raise FileNotFoundError(
             f"No FCS for reference timepoint {reference_tp!r} in {fcs_dir}")
 
-    from .fcs_io import load_xform  # lazy — pulls in flowkit
+    from .fcs_io import inspect_fcs_metadata, load_xform  # lazy — pulls in flowkit
+    from .control_compensation import candidate_for_acquisition
     from .gates import file_cuts
 
-    df, ntot = load_xform(ref_file, subsample=subsample)
+    metadata_audit = inspect_fcs_metadata(ref_file)
+    control_candidate = candidate_for_acquisition(
+        control_repository or {},
+        str(metadata_audit.get("acquisition_id") or "UNASSIGNED"),
+        specimen_voltages=metadata_audit.get("detector_voltages"),
+        require_voltage_match=True,
+    )
+    df, ntot = load_xform(
+        ref_file, subsample=subsample, control_derived_candidate=control_candidate
+    )
     print(f"[neg-anchor] reference {ref_file.name} (n={ntot:,}) — deriving negative-population "
           f"valley cuts", flush=True)
     cuts = file_cuts(df, ch)  # negative-peak → first-valley per marker (her finders)
@@ -76,7 +90,7 @@ def build_negative_anchor(patient_dir, ch, reference_tp, out_path, subsample=200
         "manual_targets": {},
         "achieved": {},
         "calibration_mae_pp": None,
-        "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_utc": "NOT_RECORDED_DETERMINISTIC_RUN",
         "locked": {
             "fsc_lo": _f(cuts["fsc_lo"]),
             "fsc_hi": _f(cuts["fsc_hi"]),
@@ -120,8 +134,12 @@ _LINEAGE_MARKERS = [
 ]
 
 
-def write_unified_cutoffs(anchor, out_dir):
-    """Write the single anchored cutoff for every marker + how it was derived."""
+def write_unified_cutoffs(anchor, out_dir, applied_policy=None):
+    """Write the reference/transfer-policy summary retained for compatibility.
+
+    The exact file-specific values are emitted separately in ``gate_parameters.csv``.
+    This table must therefore never claim that adaptive values were locked globally.
+    """
     ch = anchor.get("channels", {})
     ref = anchor.get("reference_cuts", {})
     locked = anchor.get("locked", {})
@@ -137,15 +155,17 @@ def write_unified_cutoffs(anchor, out_dir):
             continue
         rows.append({
             "marker": marker,
-            "channel": ch.get(key, ""),
+            "channel": ch.get(key, _CD4_CHANNEL if key == "cd4" else ""),
             "cutoff": round(float(v), 2),
-            "scope": "locked (reference, transferred to all timepoints)",
+            "cutoff_role": "reference anchor value",
+            "scope": "reference/transfer policy; actual per-file value in gate_parameters.csv",
             "reference_timepoint": ref_tp,
             "derivation": derivation,
         })
     # CD8 is defined as CD4-negative in her panel (PE-Cy5-5 unreliable as a primary splitter).
     if anchor.get("reference_cuts", {}).get("cd8_from_cd4_neg"):
         rows.append({"marker": "CD8", "channel": _CD8_CHANNEL, "cutoff": "",
+                     "cutoff_role": "derived identity rule",
                      "scope": "derived (CD4-negative within T)", "reference_timepoint": ref_tp,
                      "derivation": "not a direct cut; CD8 := CD4-negative"})
     # Scatter (locked FSC/SSC lymphocyte gate).
@@ -153,23 +173,31 @@ def write_unified_cutoffs(anchor, out_dir):
         if locked.get(k) is not None:
             rows.append({"marker": f"Scatter {label}", "channel": k.upper(),
                          "cutoff": round(float(locked[k]), 4),
-                         "scope": "locked (lymphocyte gate, transferred)",
+                         "cutoff_role": "reference scatter constraint",
+                         "scope": "soft-lock policy; actual per-file geometry in gate_parameters.csv",
                          "reference_timepoint": ref_tp, "derivation": derivation})
     # Donor HLA + CAR (fitted longitudinally when manual present; else control/adaptive).
-    for k, marker, chan in [("donor_cut", "HLA (Donor)", ch.get("hla", "")),
-                            ("car_cut", "CAR", ch.get("car", ""))]:
-        if anchor.get(k) is not None:
+    policy = applied_policy or {}
+    for k, policy_key, marker, chan in [
+        ("donor_cut", "hla_cut", "HLA (Donor)", ch.get("hla", "")),
+        ("car_cut", "car_cut", "CAR", ch.get("car", "")),
+    ]:
+        value = policy.get(policy_key, anchor.get(k))
+        if value is not None:
             rows.append({"marker": marker, "channel": chan,
-                         "cutoff": round(float(anchor[k]), 2),
-                         "scope": "fitted across timepoints",
+                         "cutoff": round(float(value), 2),
+                         "cutoff_role": "applied study-level configured technical threshold",
+                         "scope": "applied to files; exact per-file row in gate_parameters.csv",
                          "reference_timepoint": ref_tp,
-                         "derivation": ("fitted to manual longitudinal %" if manual
-                                        else "control / adaptive")})
+                         "derivation": str(policy.get(
+                             "hla_source" if policy_key == "hla_cut" else "car_source",
+                             "fitted to manual longitudinal %" if manual else "control / adaptive",
+                         ))})
 
     path = os.path.join(out_dir, "unified_cutoffs.csv")
     with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["marker", "channel", "cutoff", "scope",
-                                          "reference_timepoint", "derivation"])
+        w = csv.DictWriter(f, fieldnames=["marker", "channel", "cutoff", "cutoff_role",
+                                          "scope", "reference_timepoint", "derivation"])
         w.writeheader()
         w.writerows(rows)
     return path
@@ -243,6 +271,218 @@ def write_composition_shift(multi_df, out_dir, reference_tp="Baseline"):
         w.writeheader()
         w.writerows(rows)
     return path
+
+
+# -- temporal_cell_type_summary.csv -------------------------------------------
+
+_TEMPORAL_CELL_TYPES = [
+    # label, percentage column, denominator label, count column, denominator count column,
+    # optional low-support flag
+    (
+        "Lymphocytes", "%Lymphocytes (of live)", "viable live events",
+        "n_lympho", "n_live", None,
+    ),
+    ("B", "%B (of lymph)", "CD14-negative lymph region", "n_B", "n_lympho", None),
+    ("T", "%T (of lymph)", "CD14-negative lymph region", "n_T", "n_lympho", None),
+    ("CD4", "%CD4 (of lymph)", "CD14-negative lymph region", "n_CD4", "n_lympho", None),
+    ("CD8", "%CD8 (of lymph)", "CD14-negative lymph region", "n_CD8", "n_lympho", None),
+    ("NK", "%NK (of lymph)", "CD14-negative lymph region", "n_NK", "n_lympho", None),
+    (
+        "Donor NK", "%Donor NK (of lymph)", "CD14-negative lymph region",
+        "n_Donor", "n_lympho", "donor_reliable",
+    ),
+    (
+        "CAR+", "%CAR+ (of Donor NK)", "configured Donor NK region",
+        "n_CAR", "n_Donor", "car_reliable",
+    ),
+    (
+        "CD14+", "%CD14+ (of live)", "viable live events",
+        "n_CD14p", "n_live", None,
+    ),
+]
+
+
+def _number_or_none(value):
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _iso_date(value):
+    text = str(value or "").strip()
+    for pattern in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, pattern).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def load_exact_alc_matches(patient_dir):
+    """Map timepoint labels to exact-date ALC values without interpolation or imputation."""
+    root = Path(patient_dir)
+    flow_path = root / "flow.csv"
+    alc_path = root / "alc.csv"
+    if not flow_path.is_file() or not alc_path.is_file():
+        return {}
+    date_to_values = {}
+    with alc_path.open(newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            date = _iso_date(row.get("date"))
+            value = _number_or_none(row.get("alc"))
+            if date and value is not None and value >= 0:
+                date_to_values.setdefault(date, []).append(value)
+    matches = {}
+    with flow_path.open(newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            label = str(row.get("label") or "").strip()
+            date = _iso_date(row.get("date"))
+            values = date_to_values.get(date, []) if date else []
+            unique = sorted(set(round(value, 12) for value in values))
+            if label and date and len(unique) == 1:
+                matches[label] = {
+                    "alc_k_per_uL": float(unique[0]),
+                    "source_date": date,
+                    "source_file": alc_path.name,
+                    "match_policy": "exact flow.csv date to alc.csv date; no imputation",
+                }
+    return matches
+
+
+def write_temporal_cell_type_summary(
+    multi_df,
+    out_dir,
+    *,
+    patient_id="",
+    reference_tp="Baseline",
+    identity_validated=False,
+    alc_matches=None,
+):
+    """Write one auditable row per timepoint and configured cell-type region.
+
+    The percentage denominator and event-count denominator are explicit. Event counts are
+    counts in the analyzed event set; they are *not* cells/uL or biological absolute
+    abundance unless a separately validated bead/volumetric/clinical conversion is added.
+    """
+    records = list(multi_df.to_dict("records"))
+    alc_matches = alc_matches or {}
+    rows = []
+    for population, pct_col, denominator, count_col, denom_count_col, reliability_col in (
+        _TEMPORAL_CELL_TYPES
+    ):
+        values = [_number_or_none(record.get(pct_col)) for record in records]
+        counts = [_number_or_none(record.get(count_col)) for record in records]
+        ref_pos = next(
+            (index for index, record in enumerate(records)
+             if str(record.get("timepoint")) == str(reference_tp)),
+            0 if records else None,
+        )
+        ref_value = values[ref_pos] if ref_pos is not None else None
+        ref_count = counts[ref_pos] if ref_pos is not None else None
+        previous_value = None
+        previous_count = None
+        for order, (record, value, count) in enumerate(zip(records, values, counts), start=1):
+            reliability = "NOT_APPLICABLE"
+            if reliability_col:
+                reliability = (
+                    "SUPPORTED" if bool(record.get(reliability_col))
+                    else "REVIEW_LOW_EVENT_SUPPORT"
+                )
+            denominator_count = _number_or_none(record.get(denom_count_col))
+            timepoint = str(record.get("timepoint") or "")
+            alc_match = alc_matches.get(timepoint)
+            alc_value = (
+                _number_or_none(alc_match.get("alc_k_per_uL")) if alc_match else None
+            )
+            abundance = None
+            abundance_reason = "No exact ALC match through flow.csv; no imputation"
+            abundance_method = ""
+            if population == "CD14+":
+                abundance_reason = (
+                    "ALC calibrates lymphoid regions only; no validated absolute monocyte count"
+                )
+            elif alc_value is not None:
+                if population == "Lymphocytes":
+                    abundance = alc_value
+                    abundance_method = "exact-date clinical ALC"
+                elif count is not None and _number_or_none(record.get("n_lympho")):
+                    lymph_count = _number_or_none(record.get("n_lympho"))
+                    abundance = alc_value * count / lymph_count
+                    abundance_method = (
+                        "exact-date ALC multiplied by configured-region events / lymph events"
+                    )
+                if abundance is not None:
+                    abundance_reason = ""
+            rows.append({
+                "patient_id": patient_id,
+                "timepoint_order": order,
+                "timepoint": record.get("timepoint", ""),
+                "source_file": record.get("file", ""),
+                "population": population,
+                "percentage": "" if value is None else round(value, 3),
+                "percentage_denominator": denominator,
+                "percentage_point_change_from_reference": (
+                    "" if value is None or ref_value is None else round(value - ref_value, 3)
+                ),
+                "percentage_point_change_from_previous": (
+                    "" if value is None or previous_value is None
+                    else round(value - previous_value, 3)
+                ),
+                "gated_event_count": "" if count is None else int(round(count)),
+                "denominator_event_count": (
+                    "" if denominator_count is None else int(round(denominator_count))
+                ),
+                "event_count_change_from_reference": (
+                    "" if count is None or ref_count is None
+                    else int(round(count - ref_count))
+                ),
+                "event_count_change_from_previous": (
+                    "" if count is None or previous_count is None
+                    else int(round(count - previous_count))
+                ),
+                "count_unit": "gated events in analyzed event set",
+                "absolute_abundance": (
+                    "" if abundance is None else round(float(abundance), 6)
+                ),
+                "absolute_abundance_unit": "K/uL" if abundance is not None else "",
+                "absolute_abundance_available": abundance is not None,
+                "absolute_abundance_method": abundance_method,
+                "absolute_abundance_source_date": (
+                    alc_match.get("source_date", "") if alc_match else ""
+                ),
+                "absolute_abundance_source_value": (
+                    "" if alc_value is None else round(alc_value, 6)
+                ),
+                "absolute_abundance_source": (
+                    alc_match.get("source_file", "") if alc_match else ""
+                ),
+                "absolute_abundance_reason": abundance_reason,
+                "support_state": reliability,
+                "population_identity_state": (
+                    "VALIDATED" if identity_validated else "CONFIGURED_TECHNICAL_REGION"
+                ),
+                "compensation_state": record.get("compensation_state", ""),
+                "acquisition_qc_state": record.get("acquisition_qc_state", ""),
+            })
+            if value is not None:
+                previous_value = value
+            if count is not None:
+                previous_count = count
+
+    path = Path(out_dir) / "temporal_cell_type_summary.csv"
+    fieldnames = list(rows[0]) if rows else [
+        "patient_id", "timepoint_order", "timepoint", "source_file", "population",
+        "percentage", "percentage_denominator", "gated_event_count",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return str(path)
 
 
 # ── histogram overlays — "same axis range across timepoints, with that cutoff" ──

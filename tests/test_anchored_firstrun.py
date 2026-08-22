@@ -92,4 +92,4 @@ def test_end_to_end_reproduces_anchored_numbers(tmp_path: Path):  # pragma: no c
     )
     assert r.returncode == 0, r.stderr[-2000:]
     for name in ("multilineage.csv", "unified_cutoffs.csv", "composition_shift.csv"):
-        assert (out / name).is_file()
+        assert (out / "outputs" / "tables" / name).is_file()
