@@ -3,8 +3,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .eggs/
-build/
-dist/
+# Anchored to the repo root: an unanchored `build/`/`dist/` would also swallow
+# frontend/dist, which IS committed (see below).
+/build/
+/dist/
 .venv/
 venv/
 .pytest_cache/
@@ -20,7 +22,8 @@ htmlcov/
 
 # Node / frontend
 node_modules/
-frontend/dist/
+# frontend/dist IS committed on purpose: the backend serves it, so lab members need
+# neither Node nor a build step. Re-run `npm run build` and commit it after UI changes.
 # tsc -b build outputs
 *.tsbuildinfo
 frontend/vite.config.d.ts

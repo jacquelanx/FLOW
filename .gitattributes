@@ -1,0 +1,5 @@
+# The Windows launcher must keep CRLF endings or cmd.exe mishandles its goto labels.
+*.bat text eol=crlf
+# The macOS/Linux launcher must keep LF endings to stay executable by /bin/bash.
+*.command text eol=lf
+*.sh text eol=lf

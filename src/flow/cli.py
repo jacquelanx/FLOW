@@ -3,7 +3,7 @@
 Commands:
   flow doctor                         Check Docker + the BixBench-env image.
   flow run --data <dir> --question .. Run one trajectory inside Docker.
-  flow serve [--port 8000]            Start the FastAPI backend (uvicorn).
+  flow serve [--port 8000]            Start FLOW (web app + API on one port).
 
 ``flow run`` builds a config from config.yaml in the data dir (if present), then applies
 command-line overrides. It always executes inside Docker; if Docker is missing it fails
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -126,8 +127,58 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 1
 
 
+def _server_listening(host: str, port: int) -> bool:
+    """True if something accepts TCP connections on host:port."""
+    import socket
+
+    target = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.25)
+        return sock.connect_ex((target, port)) == 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
+    import threading
+    import webbrowser
+
     import uvicorn
+
+    from flow.api.webui import web_dir
+
+    url = f"http://localhost:{args.port}"
+
+    # Fail before uvicorn does, so the message names the likely cause rather than
+    # printing a bind traceback.
+    if _server_listening(args.host, args.port):
+        print(f"Port {args.port} is already in use.", file=sys.stderr)
+        print(f"  FLOW may already be running — open {url} in your browser.", file=sys.stderr)
+        print(f"  Otherwise start on a different port:  flow serve --port {args.port + 10}",
+              file=sys.stderr)
+        return 1
+
+    built = web_dir()
+    # Flushed: uvicorn logs to stderr, and a block-buffered stdout would print
+    # this banner after the server's own startup lines.
+    print("FLOW is starting.", flush=True)
+    if built is None:
+        print("  Web app  : NOT BUILT — run 'npm install && npm run build' in frontend/",
+              flush=True)
+        print(f"  API      : {url}/docs", flush=True)
+    else:
+        print(f"  Open in your browser: {url}", flush=True)
+    print("  Press Ctrl+C to stop.\n", flush=True)
+
+    # Open the browser once the server is accepting connections. --reload spawns a
+    # reloader process, so only the child that actually serves should do this.
+    if built is not None and args.browser and not args.reload:
+        def _open() -> None:
+            for _ in range(100):  # up to ~10s
+                if _server_listening(args.host, args.port):
+                    webbrowser.open(url)
+                    return
+                time.sleep(0.1)
+
+        threading.Thread(target=_open, daemon=True).start()
 
     uvicorn.run("flow.api.app:app", host=args.host, port=args.port, reload=args.reload)
     return 0
@@ -162,11 +213,13 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--image", default="flow-bixbench-env:1.0")
     pr.set_defaults(func=_cmd_run)
 
-    ps = sub.add_parser("serve", help="Start the FastAPI backend.")
+    ps = sub.add_parser("serve", help="Start FLOW: the web app and the API on one port.")
     ps.add_argument("--host", default="127.0.0.1")
     ps.add_argument("--port", type=int, default=8000)
     ps.add_argument("--reload", action="store_true")
-    ps.set_defaults(func=_cmd_serve)
+    ps.add_argument("--no-browser", dest="browser", action="store_false",
+                    help="Don't open a browser window on start.")
+    ps.set_defaults(func=_cmd_serve, browser=True)
 
     return p
 

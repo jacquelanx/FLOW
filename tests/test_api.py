@@ -333,3 +333,46 @@ def test_download_zip(client, monkeypatch):
     resp = c.get(f"/api/runs/{rid}/download")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/zip"
+
+
+# --------------------------------------------------------------------- web UI
+# The backend serves the built front-end at "/" so FLOW is one process on one port
+# (no second terminal, no dev proxy). These guard the two ways that breaks: the mount
+# swallowing /api routes, and the build going missing.
+
+
+def test_serves_built_web_ui(client):
+    c, _ = client
+    from flow.api.webui import web_dir
+
+    if web_dir() is None:
+        pytest.skip("front-end not built (run `npm run build` in frontend/)")
+    r = c.get("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert 'id="root"' in r.text
+
+
+def test_web_ui_mount_does_not_shadow_api(client):
+    c, _ = client
+    # Registered before the catch-all mount, so these must still resolve as JSON.
+    assert c.get("/api/health").json()["status"] == "ok"
+    assert "providers" in c.get("/api/providers").json()
+    assert c.get("/docs").status_code == 200
+    # An unknown /api path must 404, not fall through to index.html.
+    assert c.get("/api/does-not-exist").status_code == 404
+
+
+def test_web_ui_absent_serves_build_instructions(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLOW_WEB_DIR", str(tmp_path / "nonexistent"))
+    monkeypatch.setenv("FLOW_DATA_ROOT", str(tmp_path / "projects"))
+    monkeypatch.setenv("FLOW_ARTIFACTS_ROOT", str(tmp_path / "runs"))
+    monkeypatch.setenv("FLOW_DB_PATH", str(tmp_path / "flow.sqlite3"))
+    import flow.api.app as appmod
+
+    c = TestClient(appmod.create_app())
+    r = c.get("/")
+    assert r.status_code == 200
+    assert "npm run build" in r.text
+    # The API is still fully usable without a UI build.
+    assert c.get("/api/health").json()["status"] == "ok"

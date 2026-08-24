@@ -24,6 +24,7 @@ results. It works in two stages:
 - [Connecting an AI model (the `.env` file)](#connecting-an-ai-model-the-env-file)
 - [Using the web app (detailed walkthrough)](#using-the-web-app-detailed-walkthrough)
 - [Using the command line (optional)](#using-the-command-line-optional)
+- [Developing the web app (optional)](#developing-the-web-app-optional)
 - [How a run works](#how-a-run-works)
 - [Data you upload](#data-you-upload)
 - [Safety & privacy (please read for patient data)](#safety--privacy-please-read-for-patient-data)
@@ -35,14 +36,13 @@ results. It works in two stages:
 
 ## Before you start: what to install
 
-You need four things installed on your computer. Install each one (they're all free), then
+You need three things installed on your computer. Install each one (they're all free), then
 continue. **You only do this once.**
 
 | Tool | What it's for | Get it |
 |---|---|---|
 | **Docker Desktop** | Runs the analysis safely in a sandbox | <https://www.docker.com/products/docker-desktop/> |
 | **Python 3.10 or newer** | Runs FLOW | <https://www.python.org/downloads/> |
-| **Node.js (v18+)** | Runs the web app | <https://nodejs.org/> (choose "LTS") |
 | **git** | Downloads the code | <https://git-scm.com/downloads> |
 
 **Check what you already have.** Open a terminal (macOS: *Terminal* app; Windows: *PowerShell*)
@@ -51,11 +51,14 @@ and paste these one at a time — each should print a version number:
 ```bash
 docker --version
 python3 --version
-node --version
 git --version
 ```
 
 If any command says "command not found," install that tool from the link above, then re-check.
+
+> You do **not** need Node.js. The web app ships pre-built in this repository. (Node is only
+> needed if you want to *change* the app's interface — see
+> [Developing the web app](#developing-the-web-app-optional).)
 
 > **Important:** After installing Docker Desktop, **open the Docker Desktop app and leave it
 > running.** FLOW runs all analysis inside Docker and will refuse to start work if Docker isn't
@@ -66,11 +69,12 @@ If any command says "command not found," install that tool from the link above, 
 
 ## Quickstart (step by step)
 
-Do these steps in order. Commands are meant to be **copy-pasted** into your terminal.
+Do these steps in order. Steps 1–3 are one-time setup you copy-paste into a terminal; after
+that, starting FLOW is a double-click.
 
 ### Step 1 — Download the code
 
-Replace `<REPO_URL>` with the address of this this repository!! (it looks like
+Replace `<REPO_URL>` with the address of this repository (it looks like
 `https://github.com/your-lab/flow.git`).
 
 ```bash
@@ -80,43 +84,19 @@ cd flow
 
 Everything from here on is run from inside this `flow` folder.
 
-### Step 2 — Install FLOW
-
-We create an isolated Python environment so FLOW doesn't interfere with anything else on your
-computer, then install it.
-
-```bash
-python3 -m venv .venv                 # create the environment (once)
-source .venv/bin/activate             # turn it on  (Windows: .venv\Scripts\activate)
-python -m pip install -e ".[dev]"     # install FLOW
-```
-
-> You'll need to run `source .venv/bin/activate` again each time you open a **new** terminal to
-> use FLOW (or it might auto activate). Your prompt will show `(.venv)` when it's active.
-
-Quick check that it installed:
-
-```bash
-flow doctor
-```
-
-This checks Docker and reports whether the analysis image is built yet (it isn't — that's the
-next step).
-
-### Step 3 — Build the analysis container (one time, ~30 minutes)
+### Step 2 — Build the analysis container (one time, ~30 minutes)
 
 This builds the sandboxed environment where all analysis runs. **It's slow the first time**
 (it installs a large scientific + bioinformatics toolkit), but you only do it once.
 
 ```bash
 docker build -t flow-bixbench-env:1.0 -f docker/Dockerfile .
-flow doctor        # should now say "All checks passed"
 ```
 
 > Keep Docker Desktop running while this builds. If it fails partway, just run the same
 > `docker build` command again.
 
-### Step 4 — Connect an AI model
+### Step 3 — Connect an AI model
 
 FLOW needs an AI model to do the analysis. You tell it which one by creating a small settings
 file called `.env`. Copy the provided template:
@@ -134,32 +114,44 @@ key, save the file, then come back here.
 > built-in `mock` model, which runs offline and needs no key (it won't do real analysis, but it
 > proves the whole app works end-to-end). You can add a real key when you're ready.
 
-### Step 5 — Start FLOW (the web app — easiest)
+### Step 4 — Start FLOW
 
-You'll use **two terminal windows**: one for the backend, one for the web app.
+Make sure **Docker Desktop is running**. Then open the `flow` folder in your computer's normal
+file browser — **Finder** on macOS, **File Explorer** on Windows — and:
 
-**Terminal 1 — start the backend:**
+| Your computer | What to do |
+|---|---|
+| **macOS** | Double-click **`Start FLOW.command`** |
+| **Windows** | Double-click **`start-flow.bat`** |
+
+> **It must be Finder / File Explorer.** Double-clicking the launcher inside a code editor like
+> VS Code just opens the file for reading — it won't start anything. (In VS Code: right-click the
+> file → **Reveal in Finder**, then double-click it there.)
+
+That's it — one double-click, no terminal, nothing to type. A terminal window opens and fills
+with status text (leave it open — that window *is* FLOW running), and **your browser opens on
+the app automatically**. You should see a **"Docker ready"** badge in the bottom-left corner.
+
+**The very first double-click takes a few extra minutes** — it installs FLOW into the folder.
+Every launch after that is a few seconds.
+
+> **macOS: "cannot be opened because it is from an unidentified developer."** Right-click
+> `Start FLOW.command` → **Open** → **Open**. You only need to do this the first time.
+
+**Prefer a terminal?** One command does the same thing:
 
 ```bash
-source .venv/bin/activate     # if not already active
+python3 -m venv .venv && source .venv/bin/activate && python -m pip install -e ".[dev]"
+```
+
+```bash
 flow serve
 ```
 
-Leave this running. It automatically reads your `.env` keys.
+(The first line is one-time setup — on Windows use `.venv\Scripts\activate`. After that,
+`flow serve` is all you need. Add `flow doctor` any time to check Docker.)
 
-**Terminal 2 — start the web app:**
-
-```bash
-cd flow                       # the project folder, if you're not already there
-cd frontend
-npm install                   # first time only
-npm run dev
-```
-
-Now open **<http://localhost:5173>** in your web browser. You should see the FLOW app with a
-**"Docker ready"** badge in the bottom-left corner.
-
-### Step 6 — Run your first analysis
+### Step 5 — Run your first analysis
 
 In the browser, work top-to-bottom through the four numbered steps in the left sidebar. There's
 a full walkthrough in [Using the web app](#using-the-web-app-detailed-walkthrough) below —
@@ -170,8 +162,8 @@ in short:
 3. **Analysis** — provide/adjust the first-run analysis script and describe your panel.
 4. **Launch Run** — press **Start run**, then watch it work and read the results.
 
-**When you're done:** press `Ctrl+C` in both terminals to stop FLOW. Next time, you only need
-Step 5 (start the two terminals); Steps 1–4 are one-time setup.
+**When you're done:** close the FLOW window (or press `Ctrl+C` in it) to stop FLOW. Next time,
+all you do is double-click the launcher again — Steps 1–3 are one-time setup.
 
 ---
 
@@ -226,8 +218,8 @@ AZURE_OPENAI_API_VERSION=2024-10-21          # optional; a sensible default is u
   (`text-davinci-003`) will not work.
 - Steps might need to be tweaked a little depending on Azure configs
 
-**After editing `.env`, restart the backend** (`Ctrl+C` in Terminal 1, then `flow serve` again)
-so it picks up the new keys.
+**After editing `.env`, restart FLOW** (close the FLOW window, then double-click the launcher
+again) so it picks up the new keys.
 
 ---
 
@@ -308,13 +300,38 @@ flow run --data path/to/your/project \
   --provider gemini --model gemini-3.6-flash \
   --trajectories 8
 
-# Start just the backend API (e.g. to use the web app):
-flow serve --port 8000        # docs at http://localhost:8000/docs
+# Start the web app + API (same thing the double-click launcher runs):
+flow serve                    # app at http://localhost:8000, API docs at /docs
+flow serve --no-browser       # ...without opening a browser window
 ```
 
 Useful `flow run` options: `--provider`, `--model`, `--trajectories`, `--max-steps`,
 `--meta-provider`/`--meta-model` (use a different model for the consensus), `--out`. Each run
 writes a folder with `notebook.ipynb`, `actions.jsonl`, `answer.txt`, `run.json`, and `plots/`.
+
+---
+
+## Developing the web app (optional)
+
+Skip this unless you're changing the interface. `flow serve` serves the **pre-built** app from
+`frontend/dist/`, which is committed to the repository on purpose — that's what lets lab members
+run FLOW without Node.js installed.
+
+For UI work you want hot reload, so run the Vite dev server alongside `flow serve`:
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+That serves the app on <http://localhost:5173> and proxies `/api` to `flow serve` on port 8000
+(see `frontend/vite.config.ts`). Both are running: the backend on 8000, the dev UI on 5173.
+
+**When you're done, rebuild and commit the bundle** — otherwise everyone else keeps seeing the
+old interface:
+
+```bash
+cd frontend && npm run build && git add dist
+```
 
 ---
 
@@ -484,18 +501,25 @@ A small synthetic demo (no patient data) is generated by
 
 - **"Docker not ready" / analysis won't start** — open the Docker Desktop app and wait until the
   whale icon is steady, then reload. Verify with `flow doctor`.
-- **`flow: command not found`** — activate the environment first: `source .venv/bin/activate`
-  (Windows: `.venv\Scripts\activate`).
-- **Backend won't start: "address already in use"** — a previous `flow serve` is still running.
-  Stop it (`Ctrl+C` in its terminal) or start on another port: `flow serve --port 8010`. Note:
-  `flow serve` does **not** auto-reload on code changes — restart it after editing `.env` or the
-  code.
+- **Double-clicking the launcher does nothing** — you're double-clicking it inside a code
+  editor (e.g. VS Code), which opens files instead of running them. Use Finder / File Explorer,
+  or run it from a terminal: `./"Start FLOW.command"`.
+- **The launcher window flashes and closes** — run it from a terminal to see the error:
+  `./"Start FLOW.command"` (macOS) or `start-flow.bat` (Windows).
+- **`flow: command not found`** — you're in a terminal without the environment active. Use the
+  launcher, or run `source .venv/bin/activate` first (Windows: `.venv\Scripts\activate`).
+- **"Port 8000 is already in use"** — FLOW is probably already running: just open
+  <http://localhost:8000>. If not, close the old FLOW window, or start on another port with
+  `flow serve --port 8010`. Note: `flow serve` does **not** auto-reload on code changes —
+  restart it after editing `.env` or the code.
+- **The browser shows "The API is running — the web UI isn't built"** — you're on a checkout
+  without the pre-built app. Build it once: `cd frontend && npm install && npm run build`.
 - **The AI keeps failing with "rate limit" (HTTP 429)** — free tiers (e.g. Groq) have small
   daily limits and many trajectories use a lot of tokens. Use fewer trajectories, wait for the
   limit to reset, or switch to a model with more quota (e.g. Azure).
 - **macOS: "no such file or directory" when running** — Docker Desktop only shares certain
   folders. Keep your project folder under your home directory (e.g. `~/…`), not `/tmp`.
-- **The Docker image build failed** — re-run the `docker build …` command (Step 3); partial
+- **The Docker image build failed** — re-run the `docker build …` command (Step 2); partial
   builds resume. Keep Docker Desktop running throughout.
 
 ---

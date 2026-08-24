@@ -19,6 +19,9 @@ Endpoints (all under /api):
   GET  /api/runs/{rid}/artifacts/{path}    -> preview/download one artifact
   GET  /api/runs/{rid}/download            -> zip of the whole run
 
+The built web UI is served at ``/`` (see flow.api.webui), so the backend and the app are
+one process on one port.
+
 Runs execute in a background thread that calls ``flow.runner.run_analysis`` (Docker).
 The host never executes agent code directly.
 """
@@ -41,6 +44,7 @@ from pydantic import BaseModel
 import yaml
 
 from flow import db
+from flow.api.webui import mount_web_ui
 from flow.analysis_profile import (
     AnalysisProfile,
     compile_guidance,
@@ -760,6 +764,11 @@ def create_app() -> FastAPI:
         with _STATUS_LOCK:
             _RUN_STATUS.pop(rid, None)
         return {"ok": True, "deleted": rid}
+
+    # --------------------------------------------------------------- web UI
+    # Mounted last: it is a catch-all at "/", and Starlette matches in registration
+    # order, so every /api route above still wins.
+    mount_web_ui(app)
 
     return app
 
