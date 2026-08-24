@@ -184,3 +184,90 @@ def test_a_project_without_a_first_run_protects_nothing(tmp_path: Path):
     env.step(ToolCall(name="edit_cell", arguments={"index": "new", "source": "y = 1"}))
     obs, *_ = env.step(ToolCall(name="edit_cell", arguments={"index": 0, "source": "print(99)"}))
     assert "99" in obs and "READ-ONLY" not in obs
+
+
+def _run_seed_cell_loader(tmp_path: Path, out_dir: Path) -> dict:
+    """Execute the seed cell's table-loading half against an already-populated out_dir.
+
+    The cell's first half shells out to the project's script; these tests care only about
+    what it then discovers on disk, so the subprocess is allowed to fail and be ignored.
+    """
+    import os
+    from flow.firstrun import OUT_SUBDIR, _seed_cell
+
+    work = tmp_path / "work"
+    (work / OUT_SUBDIR).parent.mkdir(parents=True, exist_ok=True)
+    if out_dir != work / OUT_SUBDIR:
+        import shutil
+
+        shutil.copytree(out_dir, work / OUT_SUBDIR)
+    previous = os.environ.get("FLOW_WORK_DIR")
+    os.environ["FLOW_WORK_DIR"] = str(work)
+    try:
+        namespace: dict = {}
+        exec(_seed_cell(), namespace)  # noqa: S102 - executing our own generated cell
+        return namespace
+    finally:
+        if previous is None:
+            os.environ.pop("FLOW_WORK_DIR", None)
+        else:
+            os.environ["FLOW_WORK_DIR"] = previous
+
+
+def test_seed_cell_finds_tables_a_script_wrote_into_subdirectories(tmp_path: Path):
+    """A first-run script may organise its outputs; a flat scan silently found none of them."""
+    produced = tmp_path / "produced"
+    (produced / "outputs" / "tables").mkdir(parents=True)
+    (produced / "outputs" / "qc").mkdir(parents=True)
+    (produced / "outputs" / "tables" / "multilineage.csv").write_text(
+        "timepoint,value\nBaseline,1\nD7,2\n"
+    )
+    (produced / "outputs" / "qc" / "acquisition_qc.csv").write_text("file,state\na.fcs,PASS\n")
+    (produced / "top_level.csv").write_text("a\n1\n")
+
+    namespace = _run_seed_cell_loader(tmp_path, produced)
+
+    tables = namespace["first_run_tables"]
+    assert set(tables) == {"multilineage", "acquisition_qc", "top_level"}
+    # Each table is also bound as a variable named after its file, at any depth.
+    assert namespace["multilineage"].shape == (2, 2)
+    assert list(namespace["acquisition_qc"].columns) == ["file", "state"]
+
+
+def test_seed_cell_disambiguates_same_named_tables_in_different_folders(tmp_path: Path):
+    produced = tmp_path / "produced"
+    (produced / "tables").mkdir(parents=True)
+    (produced / "qc").mkdir(parents=True)
+    (produced / "tables" / "summary.csv").write_text("a\n1\n")
+    (produced / "qc" / "summary.csv").write_text("b\n2\n")
+
+    tables = _run_seed_cell_loader(tmp_path, produced)["first_run_tables"]
+
+    assert len(tables) == 2, "one table must not shadow the other"
+    assert "summary" in tables
+    assert any(name != "summary" and name.endswith("summary") for name in tables)
+
+
+def test_seed_cell_output_stays_inside_the_seed_observation_window(tmp_path: Path):
+    """Loading every table recursively must not flood the window the agent actually sees."""
+    import io
+    import contextlib
+
+    from flow.env.notebook_env import SEED_OBS_CHARS
+
+    produced = tmp_path / "produced"
+    (produced / "outputs" / "tables").mkdir(parents=True)
+    header = ",".join(f"col_{i}" for i in range(40))
+    row = ",".join(str(i) for i in range(40))
+    for index in range(20):
+        (produced / "outputs" / "tables" / f"table_{index:02d}.csv").write_text(
+            header + "\n" + "\n".join([row] * 30) + "\n"
+        )
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        namespace = _run_seed_cell_loader(tmp_path, produced)
+
+    assert len(namespace["first_run_tables"]) == 20, "every table is still loaded"
+    # The stdout tail of the project's script shares this window, so leave it real headroom.
+    assert len(buffer.getvalue()) + 4000 <= SEED_OBS_CHARS

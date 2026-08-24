@@ -134,38 +134,71 @@ def provision_anchored(project_dir: str | Path) -> Path:
 
 def _seed_cell() -> str:
     """The opening notebook cell: run the project's script, then auto-load its CSV outputs."""
+    src = '''\
+# === FLOW first-run (this project's script; you did NOT write this) ===
+import os, glob, subprocess
+import pandas as pd
+pd.set_option('display.width', 200); pd.set_option('display.max_columns', 60)
+DATA = os.environ.get('FLOW_DATA_DIR', '/data')
+WORK = os.environ.get('FLOW_WORK_DIR', '/work')
+out_dir = os.path.join(WORK, '__OUT_SUBDIR__'); os.makedirs(out_dir, exist_ok=True)
+plots_dir = os.path.join(WORK, 'plots'); os.makedirs(plots_dir, exist_ok=True)
+cmd = ['python', '__CONTAINER_SCRIPT__', '--data', DATA, '--out', out_dir,
+       '--plots', plots_dir]
+print('Running the first-run script provided for this project...')
+_p = subprocess.run(cmd, capture_output=True, text=True)
+print(_p.stdout[-4000:])
+if _p.returncode != 0:
+    print('FIRST-RUN STDERR (tail):', _p.stderr[-3000:])
+
+__TABLE_LOADER__
+# Auto-load every table the script produced, at any depth under out_dir. USE THESE EXACT
+# COLUMN NAMES — do not guess, and do not recompute the analysis; interpret these tables.
+first_run_tables = {}
+_loaded = _flow_load_tables(out_dir, first_run_tables)
+# Schemas are unconditional — they are what stops the agent guessing column names. Rows come
+# out of a shared budget, spent cheapest-table-first so the budget buys the most tables it can
+# rather than being drained by whichever wide table happens to sort first.
+_rendered = {}
+for _name in _loaded:
+    _df = first_run_tables[_name]
+    if len(_df) <= __FIRSTRUN_TABLE_ROWS__:
+        _rendered[_name] = _df.to_string()
+_budget = __FIRSTRUN_ROW_BUDGET_CHARS__
+_with_rows = set()
+for _name in sorted(_rendered, key=lambda n: (len(_rendered[n]), n)):
+    if len(_rendered[_name]) > _budget:
+        continue
+    _budget -= len(_rendered[_name])
+    _with_rows.add(_name)
+_no_rows = []
+for _name in _loaded:
+    _df = first_run_tables[_name]
+    if _name.isidentifier():
+        globals()[_name] = _df   # also expose as a variable named after the CSV
+    _cols = list(_df.columns)
+    _shown = _cols[:__INVENTORY_COLUMNS__]
+    _rest = len(_cols) - len(_shown)
+    _more = (f'  (+{_rest} more column(s); run list({_name}.columns) for all of them)'
+             if _rest > 0 else '')
+    print(f'\\n=== {_name}  shape={_df.shape} ===\\n  columns: {_shown}{_more}')
+    if _name in _with_rows:
+        print(_rendered[_name])
+    else:
+        _no_rows.append(_name)
+if _no_rows:
+    print(f'\\n[rows not shown for {len(_no_rows)} table(s): {", ".join(_no_rows)}. '
+          f'Each is a full DataFrame here — print what you need from it.]')
+if not first_run_tables:
+    print('NOTE: the first-run script produced no CSV tables in', out_dir)
+'''
     return (
-        "# === FLOW first-run (this project's script; you did NOT write this) ===\n"
-        "import os, glob, subprocess\n"
-        "import pandas as pd\n"
-        "pd.set_option('display.width', 200); pd.set_option('display.max_columns', 60)\n"
-        "DATA = os.environ.get('FLOW_DATA_DIR', '/data')\n"
-        "WORK = os.environ.get('FLOW_WORK_DIR', '/work')\n"
-        "out_dir = os.path.join(WORK, '" + OUT_SUBDIR + "'); os.makedirs(out_dir, exist_ok=True)\n"
-        "plots_dir = os.path.join(WORK, 'plots'); os.makedirs(plots_dir, exist_ok=True)\n"
-        "cmd = ['python', '" + CONTAINER_SCRIPT + "', '--data', DATA, '--out', out_dir,\n"
-        "       '--plots', plots_dir]\n"
-        "print('Running the first-run script provided for this project...')\n"
-        "_p = subprocess.run(cmd, capture_output=True, text=True)\n"
-        "print(_p.stdout[-4000:])\n"
-        "if _p.returncode != 0:\n"
-        "    print('FIRST-RUN STDERR (tail):', _p.stderr[-3000:])\n"
-        "# Auto-load every table the script produced. USE THESE EXACT COLUMN NAMES — do not\n"
-        "# guess, and do not recompute the analysis; interpret these tables.\n"
-        "first_run_tables = {}\n"
-        "for _f in sorted(glob.glob(os.path.join(out_dir, '*.csv'))):\n"
-        "    _name = os.path.splitext(os.path.basename(_f))[0]\n"
-        "    try:\n"
-        "        first_run_tables[_name] = pd.read_csv(_f)\n"
-        "    except Exception as _e:\n"
-        "        print('could not load', _f, _e)\n"
-        "for _name, _df in first_run_tables.items():\n"
-        "    if _name.isidentifier():\n"
-        "        globals()[_name] = _df   # also expose as a variable named after the CSV\n"
-        "    print(f'\\n=== {_name}  shape={_df.shape}  columns={list(_df.columns)} ===')\n"
-        "    print(_df.head(12).to_string())\n"
-        "if not first_run_tables:\n"
-        "    print('NOTE: the first-run script produced no CSV tables in', out_dir)\n"
+        src.replace("__TABLE_LOADER__", _TABLE_LOADER_SRC)
+        .replace("__OUT_SUBDIR__", OUT_SUBDIR)
+        .replace("__CONTAINER_SCRIPT__", CONTAINER_SCRIPT)
+        .replace("__FIRSTRUN_ROW_BUDGET_CHARS__", str(FIRSTRUN_ROW_BUDGET_CHARS))
+        .replace("__FIRSTRUN_TABLE_ROWS__", str(FIRSTRUN_TABLE_ROWS))
+        .replace("__INVENTORY_COLUMNS__", str(INVENTORY_COLUMNS))
     )
 
 
@@ -207,6 +240,66 @@ INVENTORY_ROWS = 4
 # so the trade is columns for items, and the truncation says so rather than implying the table
 # is narrower than it is.
 INVENTORY_COLUMNS = 12
+# Rows printed per first-run table. The first-run cell competes with far fewer tables than the
+# diagnostics cell, so it can afford whole small tables — a per-timepoint headline table is a
+# handful of rows and is worth showing in full.
+FIRSTRUN_TABLE_ROWS = 12
+# Total characters the first-run cell will spend on table ROWS. Schemas are always printed for
+# every table (that is what stops the agent guessing column names); rows are what gets cut when
+# a study is large. A governed first-run publishes ~18 tables across outputs/, whose combined
+# to_string() runs past 30000 chars on a 3-timepoint study alone.
+#
+# Sized against NotebookEnvironment.SEED_OBS_CHARS (32000), which caps this WHOLE cell: the
+# script's stdout tail takes up to 4000 and the always-printed schemas take ~4500 on that same
+# study, so 24000 keeps the cell inside the window with headroom instead of having the
+# truncator drop its middle. Tables that do not fit are named, and each is still a full
+# DataFrame in the notebook.
+FIRSTRUN_ROW_BUDGET_CHARS = 24000
+
+
+# Both opening cells load the script's CSV outputs the same way, so the loader is defined once
+# and embedded in each. Outputs are discovered RECURSIVELY: a first-run script is free to
+# organise its results into subdirectories (the anchored pipeline publishes them under
+# outputs/tables, outputs/qc and outputs/reports), and a non-recursive scan silently finds
+# nothing there and reports "no tables" instead of failing.
+_TABLE_LOADER_SRC = '''\
+def _flow_table_name(path, out_dir, taken):
+    """Stable variable name for a table; disambiguated by folder only when it collides."""
+    import os as _o
+    stem = _o.path.splitext(_o.path.basename(path))[0]
+    if stem not in taken:
+        return stem
+    rel = _o.path.relpath(path, out_dir)
+    parts = _o.path.dirname(rel).split(_o.sep)
+    parent = parts[-1] if parts and parts[-1] not in ('', '.') else ''
+    candidate = f'{parent}__{stem}' if parent else stem
+    suffix = 2
+    while candidate in taken:
+        candidate = f'{stem}__{suffix}'
+        suffix += 1
+    return candidate
+
+
+def _flow_load_tables(out_dir, into):
+    """Load every CSV under out_dir (recursively) into `into`; return the new names in order."""
+    import glob as _g, os as _o
+    import pandas as _p
+    added = []
+    paths = sorted(_g.glob(_o.path.join(out_dir, '**', '*.csv'), recursive=True),
+                   key=lambda p: (p.count(_o.sep), p))
+    for path in paths:
+        name = _flow_table_name(path, out_dir, into)
+        if name in into:
+            continue
+        try:
+            into[name] = _p.read_csv(path)
+        except Exception as exc:
+            # An empty table is a legitimate result (nothing flagged), not a load failure.
+            print('could not load', _o.path.relpath(path, out_dir), type(exc).__name__)
+            continue
+        added.append(name)
+    return added
+'''
 
 
 def _diagnostics_cell() -> str:
@@ -264,14 +357,10 @@ if _d.returncode != 0:
     print('DIAGNOSTICS STDERR (tail):', _d.stderr[-3000:])
 
 # Load any NEW tables the diagnostics wrote (the first-run cell already loaded its own).
-for _f in sorted(_glob.glob(_os.path.join(_out_dir, '*.csv'))):
-    _name = _os.path.splitext(_os.path.basename(_f))[0]
-    if _name in _before:
-        continue
-    try:
-        first_run_tables[_name] = _pd.read_csv(_f)
-    except Exception as _e:
-        print('could not load', _f, _e)
+# Same recursive loader and naming as the first-run cell, so "already loaded" is decided on
+# the same keys and a diagnostics table written into a subdirectory is not missed.
+__TABLE_LOADER__
+_flow_load_tables(_out_dir, first_run_tables)
 _new = sorted(set(first_run_tables) - _before)
 if _new:
     # An inventory, not a dump: schemas plus a few rows of the small tables. Every one of
@@ -309,7 +398,8 @@ if _os.path.isfile(_worklist_path):
                   f'with open({_worklist_path!r}).read()]')
 '''
     return (
-        src.replace("__DIAG_SCRIPT__", CONTAINER_DIAGNOSTICS)
+        src.replace("__TABLE_LOADER__", _TABLE_LOADER_SRC)
+        .replace("__DIAG_SCRIPT__", CONTAINER_DIAGNOSTICS)
         .replace("__OUT_SUBDIR__", OUT_SUBDIR)
         .replace("__DIGEST_FILENAME__", DIGEST_FILENAME)
         .replace("__DIGEST_PRINT_CHARS__", str(DIGEST_PRINT_CHARS))

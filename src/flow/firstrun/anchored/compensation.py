@@ -34,8 +34,14 @@ def _stain_identity(value: str) -> str:
         normalized = normalized.split("stained control", 1)[0]
     normalized = normalized.replace("compensation controls", "")
     normalized = normalized.replace("stained control", "")
-    normalized = re.sub(r"[^a-z0-9]+", "", normalized)
-    return normalized[:-1] if len(normalized) > 1 and normalized.endswith("a") else normalized
+    # Drop the detector's area suffix ("BV510-A" -> "BV510") while it is still SEPARATED from
+    # the fluorochrome name. Removing a bare trailing "a" after the squash below would eat a
+    # real character from any fluorochrome ending in one: "Aqua-A" would give "aqua" but its
+    # own "Aqua Stained Control" would give "aqu", so a complete LIVE/DEAD Aqua control set
+    # never matched its own spill channel. Requiring the separator also makes this idempotent,
+    # which matters because verify_control_settings re-normalizes already-normalized targets.
+    normalized = re.sub(r"[-_/ ]+a$", "", normalized.strip())
+    return re.sub(r"[^a-z0-9]+", "", normalized)
 
 
 @dataclass(frozen=True)

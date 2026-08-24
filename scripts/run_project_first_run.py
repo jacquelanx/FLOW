@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,9 +48,8 @@ def main() -> None:
     if not data.is_dir():
         raise SystemExit(f"input snapshot not found: {data}")
     output = project_run_dir(project, args.run_id)
-    if output.exists() and any(output.iterdir()):
-        raise SystemExit(f"refusing to replace non-empty project run: {output}")
-    output.mkdir(parents=True, exist_ok=True)
+    # Validate every argument BEFORE touching the run directory, so a mistyped control path
+    # cannot leave a half-created run behind.
     compensation_controls = (
         Path(args.compensation_controls).resolve() if args.compensation_controls else None
     )
@@ -58,6 +58,29 @@ def main() -> None:
         raise SystemExit(f"compensation-control directory not found: {compensation_controls}")
     if analysis_contract is not None and not analysis_contract.is_file():
         raise SystemExit(f"analysis contract not found: {analysis_contract}")
+
+    # Write-once protects a COMPLETED canonical run. first_run_bundle.json is the last thing the
+    # pipeline writes, so its presence -- not merely a non-empty directory -- is what marks one;
+    # build_first_run_bundle independently refuses to replace a non-identical manifest, so the
+    # guarantee still holds at the layer that owns it.
+    #
+    # Guarding on emptiness instead made every FAILED attempt permanent: this launcher's own
+    # project_run_location.json left the directory non-empty, so re-running the identical
+    # command after a crash was refused and the operator had to invent a new run id for a run
+    # that never produced a result.
+    if (output / "first_run_bundle.json").is_file():
+        raise SystemExit(
+            f"refusing to replace a completed canonical run: {output}\n"
+            "Use a new --run-id for any changed input, source, configuration, or artifact."
+        )
+    if output.exists() and any(output.iterdir()):
+        # An earlier attempt that never produced a bundle. Clear it rather than merging into
+        # it, so stale artifacts from that attempt cannot be hashed into this run's manifest.
+        leftovers = sorted(path.name for path in output.iterdir())
+        print(f"replacing an incomplete earlier attempt at {output}")
+        print(f"  removing: {', '.join(leftovers)}")
+        shutil.rmtree(output)
+    output.mkdir(parents=True, exist_ok=True)
     (output / "project_run_location.json").write_text(json.dumps({
         "schema_version": "flow.project_run_location.v1",
         "project_root": str(project),
@@ -86,6 +109,11 @@ def main() -> None:
         command.extend(["--analysis-contract", str(analysis_contract)])
     completed = subprocess.run(command, cwd=repo, check=False)
     if completed.returncode:
+        print(
+            f"first run failed (exit {completed.returncode}); no canonical bundle was written. "
+            f"Re-run the same --run-id {args.run_id!r} once the cause is fixed.",
+            file=sys.stderr,
+        )
         raise SystemExit(completed.returncode)
     print(f"PROJECT_FIRST_RUN_OK: {output}")
 

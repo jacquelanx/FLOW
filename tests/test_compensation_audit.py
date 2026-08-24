@@ -149,3 +149,57 @@ def test_review_matrix_missing_voltages_and_duplicate_stains_cannot_pass():
     assert "duplicate_single_stain_controls" in reasons
     assert "detector_voltage_metadata_missing" in reasons
     assert summarize_compensation(specimen)["state"] == "REVIEW"
+
+
+def test_stain_identity_matches_a_detector_to_its_own_control_file():
+    """The "-A" area suffix is dropped; a fluorochrome's own trailing letter is not.
+
+    Stripping a bare trailing "a" made "Aqua-A" normalize to "aqua" but its own
+    "Aqua Stained Control" to "aqu", so a complete LIVE/DEAD Aqua control set was reported as
+    a spill channel with no single stain and blocked the run.
+    """
+    pairs = [
+        ("BV510-A", "Compensation Controls_BV510-A Stained Control.fcs"),
+        ("APC-A", "Compensation Controls_APC Stained Control.fcs"),
+        ("Alexa Fluor 700-A", "Compensation Controls_Alexa Fluor 700 Stained Control.fcs"),
+        ("Aqua-A", "Compensation Controls_Aqua Stained Control.fcs"),
+        ("LIVE DEAD Aqua-A", "Compensation Controls_LIVE DEAD Aqua Stained Control.fcs"),
+        ("CD45RA-A", "Compensation Controls_CD45RA Stained Control.fcs"),
+        ("PE-Texas Red-A", "Compensation Controls_PE-Texas Red Stained Control.fcs"),
+    ]
+    for channel, control_file in pairs:
+        # verify_control_settings re-normalizes an inventory row's stored target, so the
+        # control side is normalized twice on the real path.
+        assert _stain_identity(channel) == _stain_identity(_stain_identity(control_file)), (
+            f"{channel} does not match {control_file}"
+        )
+
+
+def test_stain_identity_is_idempotent():
+    for value in ("Aqua-A", "BV510-A", "UV 450 L/D-A", "CD45RA-A", "A"):
+        once = _stain_identity(value)
+        assert _stain_identity(once) == once
+
+
+def test_complete_control_set_for_an_a_ending_fluorochrome_is_not_blocked():
+    voltages = [{"channel": "BV510-A", "voltage": 400.0},
+                {"channel": "Aqua-A", "voltage": 400.0}]
+    specimen = [{
+        "file": "s.fcs", "acquisition_id": "A1", "matrix_dimension": 2,
+        "matrix_channels": ["BV510-A", "Aqua-A"], "matrix_validation_state": "PASS",
+        "compensation_state": "PROVISIONAL_EMBEDDED_UNVERIFIED",
+        "detector_voltages": voltages,
+    }]
+    inventory = [
+        {"file": "Compensation Controls_Unstained Control.fcs", "acquisition_id": "A1",
+         "control_target": None, "detector_voltages": voltages},
+        {"file": "Compensation Controls_BV510-A Stained Control.fcs", "acquisition_id": "A1",
+         "control_target": _stain_identity("Compensation Controls_BV510-A Stained Control.fcs"),
+         "detector_voltages": voltages},
+        {"file": "Compensation Controls_Aqua Stained Control.fcs", "acquisition_id": "A1",
+         "control_target": _stain_identity("Compensation Controls_Aqua Stained Control.fcs"),
+         "detector_voltages": voltages},
+    ]
+    assessment = verify_control_settings(specimen, inventory, inventory)["acquisitions"][0]
+    assert assessment["missing_spill_matrix_stain_channels"] == []
+    assert assessment["state"] == "PASS", assessment["reasons"]
